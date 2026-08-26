@@ -1,0 +1,122 @@
+# ─── Node ────────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log
+yarn-error.log
+yarn-debug.log
+.npm/
+
+# ─── React Native / Metro ────────────────────────────────────────────────────
+.metro-health-check*
+.react-native-cache/
+
+# ─── Android ─────────────────────────────────────────────────────────────────
+android/build/
+android/app/build/
+android/.gradle/
+android/local.properties
+android/captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Keep the debug keystore out of version control.
+# Generate a fresh one with: keytool -genkeypair -keystore android/app/debug.keystore
+android/app/debug.keystore
+
+# ─── iOS (future-proofing) ───────────────────────────────────────────────────
+ios/build/
+ios/Pods/
+ios/*.xcworkspace/xcuserdata/
+ios/*.xcodeproj/xcuserdata/
+ios/*.xcodeproj/project.xcworkspace/xcshareddata/swpm/
+*.ipa
+
+# ─── TypeScript / Babel build output ─────────────────────────────────────────
+lib/
+dist/
+build/
+*.tsbuildinfo
+.cache/
+
+# ─── Environment & secrets ───────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keystore
+!android/app/debug.keystore        # re-allow only if you want it tracked
+
+# ─── WatermelonDB / SQLite ───────────────────────────────────────────────────
+# Local dev databases — never commit patient data
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ─── ML model artifacts ──────────────────────────────────────────────────────
+# Large TFLite models live in assets/ and are tracked via Git LFS or released
+# as build artifacts — raw training outputs do not belong in the repo.
+*.tflite.tmp
+*.pb
+*.h5
+*.onnx
+# Keep: assets/**/*.tflite (the bundled Stage 1 model IS tracked)
+
+# ─── Demo / raw signal files ─────────────────────────────────────────────────
+# .raw files in src/demo/ ARE tracked (they're the demo signal data).
+# Exclude any large unprocessed capture dumps if they land here.
+recordings/
+captures/
+*.pcm
+*.wav
+*.mp3
+*.m4a
+# Exception: short reference clips committed intentionally
+!src/demo/*.raw
+
+# ─── OS noise ────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.Spotlight-V100
+.Trashes
+
+# ─── Editor / IDE ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+*.swp
+*.swo
+*~
+
+# ─── Logs & diagnostics ──────────────────────────────────────────────────────
+*.log
+logs/
+crash-reports/
+
+# ─── Test output ─────────────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+
+# ─── Flipper / profiling ─────────────────────────────────────────────────────
+android/app/src/main/assets/flipper_config.json
+flipper/
+
+# ─── Gradle wrapper binaries ─────────────────────────────────────────────────
+# gradlew and gradlew.bat ARE tracked; only the downloaded daemon cache is not
+.gradle/
+android/.gradle/
+
+# ─── GitHub Actions automation ───────────────────────────────────────────────
+# The modernize/java-upgrade workflow has its own broad ignore — keep it.
+# Root .gitignore is the canonical one for the app codebase.
