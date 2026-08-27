@@ -152,6 +152,7 @@ export default function SettingsScreen() {
   const [discovered,     setDiscovered]     = useState<BluetoothDevice[]>([]);
   const [scanning,       setScanning]       = useState(false);
   const [connecting,     setConnecting]     = useState<string | null>(null);
+  const [forgetting,     setForgetting]     = useState<string | null>(null);
 
   // Device provisioning fields
   const [endpoint,    setEndpoint]    = useState('');
@@ -195,6 +196,26 @@ export default function SettingsScreen() {
     const found = await BluetoothService.startDiscovery();
     setDiscovered(found);
     setScanning(false);
+  }
+
+  function handleForget(device: BluetoothDevice) {
+    Alert.alert(
+      'Forget device?',
+      `Remove "${device.name ?? device.address}" from paired devices? You will need to pair it again to use it.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Forget',
+          style: 'destructive',
+          onPress: async () => {
+            setForgetting(device.address);
+            await BluetoothService.forgetDevice(device.address);
+            await loadPaired();
+            setForgetting(null);
+          },
+        },
+      ],
+    );
   }
 
   async function handleStopScan() {
@@ -498,11 +519,21 @@ export default function SettingsScreen() {
                   <TouchableOpacity
                     style={[styles.connectBtn, connecting === d.address && styles.connectBtnDisabled]}
                     onPress={() => handleConnect(d.address)}
-                    disabled={connecting !== null}
+                    disabled={connecting !== null || forgetting !== null}
                   >
                     {connecting === d.address
                       ? <ActivityIndicator size="small" color={Colors.navy} />
                       : <Text style={styles.connectBtnText}>{S.settings.connect}</Text>
+                    }
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.forgetBtn, forgetting === d.address && styles.forgetBtnDisabled]}
+                    onPress={() => handleForget(d)}
+                    disabled={forgetting !== null || connecting !== null}
+                  >
+                    {forgetting === d.address
+                      ? <ActivityIndicator size="small" color={Colors.red} />
+                      : <Text style={styles.forgetBtnText}>Forget</Text>
                     }
                   </TouchableOpacity>
                 </View>
@@ -767,6 +798,13 @@ const styles = StyleSheet.create({
   },
   connectBtnDisabled: { borderColor: Colors.border },
   connectBtnText: { fontSize: 13, fontFamily: 'IBMPlexSans-Medium', fontWeight: '500', color: Colors.navy },
+
+  forgetBtn: {
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 7, minWidth: 60, alignItems: 'center',
+    borderWidth: 1.5, borderColor: '#FBBCB8', backgroundColor: Colors.white, flexShrink: 0,
+  },
+  forgetBtnDisabled: { borderColor: Colors.border, opacity: 0.5 },
+  forgetBtnText: { fontSize: 13, fontFamily: 'IBMPlexSans-Medium', fontWeight: '500', color: Colors.red },
 
   scanBtn: {
     paddingHorizontal: 14, paddingVertical: 6, borderRadius: 7, backgroundColor: Colors.navy,

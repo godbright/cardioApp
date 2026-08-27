@@ -19,7 +19,7 @@ import pcgSamples from './pcg_aortic.raw';
 import ecgSamples from './ecg_aortic.raw';
 
 // ── Flip this to enable demo playback ────────────────────────────────────────
-export const DEMO_MODE = true;
+export const DEMO_MODE = false;
 
 // ── Pre-recorded signal arrays (normalized -1 to 1) ──────────────────────────
 export const PCG_DEMO_SAMPLES: number[] = pcgSamples;

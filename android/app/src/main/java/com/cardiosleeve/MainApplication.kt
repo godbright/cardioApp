@@ -8,6 +8,7 @@ import com.facebook.react.ReactPackage
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.load
 import com.facebook.react.defaults.DefaultReactNativeHost
 import com.facebook.soloader.SoLoader
+import com.cardiosleeve.sda.SdaPackage
 
 class MainApplication : Application(), ReactApplication {
 
@@ -15,7 +16,8 @@ class MainApplication : Application(), ReactApplication {
       object : DefaultReactNativeHost(this) {
         override fun getPackages(): List<ReactPackage> =
             PackageList(this).packages.apply {
-              // Auto-linked packages — add manual packages here if needed
+              // SdaPackage installs global.CardioSqaModule into the Hermes JSI runtime.
+              add(SdaPackage())
             }
 
         override fun getJSMainModuleName(): String = "index"

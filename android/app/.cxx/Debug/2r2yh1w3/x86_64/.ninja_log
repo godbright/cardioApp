@@ -1,0 +1,8 @@
+# ninja log v5
+0	276	1787764115604939640	CMakeFiles/CardioSda.dir/sda/filter.cpp.o	99ebd0f35090d14f
+0	293	1787764115622227684	CMakeFiles/CardioSda.dir/sda/ecg_sqi.cpp.o	23bafad4b2c5c70d
+0	406	1787764115734245385	CMakeFiles/CardioSda.dir/sda/pcg_sqi.cpp.o	337b0b7d18922065
+1	458	1787764115786935074	CMakeFiles/CardioSda.dir/sda/sda_module.cpp.o	dd4edb247441725d
+0	483	1787764115813102020	CMakeFiles/CardioSda.dir/sda/sqa_engine.cpp.o	9572fb822457b72
+1	578	1787764115907495169	CMakeFiles/CardioSda.dir/sda/sqa_host_object.cpp.o	be2fc93cdaf22053
+579	619	1787764115949291465	/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/build/intermediates/cxx/Debug/2r2yh1w3/obj/x86_64/libCardioSda.so	36dbedd20b95bf51

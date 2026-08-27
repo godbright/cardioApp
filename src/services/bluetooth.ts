@@ -231,6 +231,20 @@ export const BluetoothService = {
   },
 
   /**
+   * Removes the OS-level bond for the given device address.
+   * If the device is currently connected, it is disconnected first.
+   * Returns true if the bond was removed, false if the device was not bonded.
+   */
+  async forgetDevice(address: string): Promise<boolean> {
+    const granted = await _requestPermissions();
+    if (!granted) return false;
+    if (_connectedDevice?.address === address) {
+      await BluetoothService.disconnect();
+    }
+    return RNBluetoothClassic.unpairDevice(address).catch(() => false);
+  },
+
+  /**
    * Scans for discoverable Bluetooth devices in range.
    * Android discovery runs for ~12 seconds then resolves.
    * The device must be in discoverable mode (typical for new pairings).

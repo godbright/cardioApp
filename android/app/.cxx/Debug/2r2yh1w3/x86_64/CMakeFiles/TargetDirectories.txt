@@ -1,0 +1,3 @@
+/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/x86_64/CMakeFiles/CardioSda.dir
+/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/x86_64/CMakeFiles/edit_cache.dir
+/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/x86_64/CMakeFiles/rebuild_cache.dir

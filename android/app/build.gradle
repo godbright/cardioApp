@@ -78,6 +78,20 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     namespace "com.cardiosleeve"
+
+    // Expose the react-android AAR's prefab package so CMake can find ReactAndroid::jsi
+    buildFeatures {
+        prefab true
+    }
+
+    // C++ DSP engine + JSI host object
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
     defaultConfig {
         applicationId "com.cardiosleeve"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -88,6 +102,14 @@ android {
         manifestPlaceholders = [usesCleartextTraffic: "true"]
         // react-native-camera requires selecting a flavor (general = no ML Kit)
         missingDimensionStrategy 'react-native-camera', 'general'
+
+        externalNativeBuild {
+            cmake {
+                // c++_shared is required when linking against jsi (which uses shared STL)
+                arguments "-DANDROID_STL=c++_shared"
+                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+            }
+        }
     }
     signingConfigs {
         debug {

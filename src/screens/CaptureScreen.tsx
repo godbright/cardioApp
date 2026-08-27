@@ -11,6 +11,7 @@ import { getSiteById } from '../constants/sites';
 import { speak } from '../services/tts';
 import { useOrientation } from '../hooks/useOrientation';
 import { useStrings } from '../i18n/useStrings';
+import { useCardioSQI } from '../hooks/useCardioSQI';
 import type { CapturePhase, Posture } from '../types';
 
 function phaseToStep(phase: CapturePhase): number {
@@ -30,30 +31,24 @@ export default function CaptureScreen() {
   const siteInfo = site ? getSiteById(site) : null;
   const isPcg    = modality === 'pcg';
 
+  const sqiMode  = isPcg ? 'pcg' : 'ecg';
+  // Stay active through 'ready' so the debug overlay remains visible after the
+  // phase transition. Deactivates when recording starts.
+  const sqiActive = capturePhase === 'positioning' || capturePhase === 'ready';
+  const sqa      = useCardioSQI(sqiActive, sqiMode);
+
   // Dynamic waveform box height — measured via onLayout so the waveform fills
   // whatever space is available in both portrait and landscape.
   const [waveBoxH, setWaveBoxH] = useState(300);
 
-  const waveformActive = capturePhase !== 'gate' && capturePhase !== 'positioning';
+  // waveform is live during positioning so the CHW sees the signal while placing the device
+  const waveformActive = capturePhase !== 'gate';
   const { pcgBuf, ecgBuf } = useWaveformBuffers(waveformActive, modality);
 
   const phaseTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (phaseTimer.current) clearInterval(phaseTimer.current);
-
-    if (capturePhase === 'positioning') {
-      let q = 26;
-      phaseTimer.current = setInterval(() => {
-        q = Math.min(90, q + 4);
-        dispatch({ type: 'SET_QUALITY', quality: q });
-        if (q >= 80) {
-          clearInterval(phaseTimer.current!);
-          dispatch({ type: 'SET_CAPTURE_PHASE', phase: 'ready' });
-          speak('quality.ready.auto');
-        }
-      }, 180);
-    }
 
     if (capturePhase === 'recording') {
       let prog = 0;
@@ -70,6 +65,17 @@ export default function CaptureScreen() {
 
     return () => { if (phaseTimer.current) clearInterval(phaseTimer.current); };
   }, [capturePhase]);
+
+  // Drive quality bar and phase transition from real SQI data (or DEMO_MODE synthetic ramp)
+  useEffect(() => {
+    if (!sqa) return;
+    const q = Math.round(sqa.score * 100);
+    dispatch({ type: 'SET_QUALITY', quality: q });
+    if (sqa.ready && capturePhase === 'positioning') {
+      dispatch({ type: 'SET_CAPTURE_PHASE', phase: 'ready' });
+      speak('quality.ready.auto');
+    }
+  }, [sqa]);
 
   const stepIdx = phaseToStep(capturePhase);
   const stepLabels = [S.capture.stepPosition, S.capture.stepAcquire, S.capture.stepRecord, S.capture.stepScreen] as const;
@@ -250,6 +256,16 @@ export default function CaptureScreen() {
             >
               {waveBoxH > 0 && (
                 <WaveformView streams={streams} height={waveBoxH} />
+              )}
+              {__DEV__ && sqa && (
+                <View style={styles.sqiOverlay} pointerEvents="none">
+                  <Text style={styles.sqiOverlayText}>
+                    {`score ${sqa.score.toFixed(3)}  ready ${sqa.ready ? 'YES' : 'no'}\n`}
+                    {isPcg
+                      ? `ser ${sqa.serSqi.toFixed(3)}  e ${sqa.eSqi.toFixed(3)}  a ${sqa.aSqi.toFixed(3)}`
+                      : `b ${sqa.bSqi.toFixed(3)}  k ${sqa.kSqi.toFixed(3)}  bas ${sqa.basSqi.toFixed(3)}`}
+                  </Text>
+                </View>
               )}
             </View>
             <View style={styles.captionBar}>
@@ -545,4 +561,13 @@ const styles = StyleSheet.create({
   recordBtnCompactLabel: { fontSize: 13, fontFamily: 'IBMPlexSans-Medium', fontWeight: '500', color: Colors.navy },
   recordingStateCompact: { flex: 1, gap: 6, justifyContent: 'center' },
   analyzeStateCompact: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+
+  // ── DEV-only SQI debug overlay ────────────────────────────────────────────
+  sqiOverlay: {
+    position: 'absolute', bottom: 8, left: 8,
+    backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 6, padding: 6,
+  },
+  sqiOverlayText: {
+    color: '#00ff88', fontFamily: 'IBMPlexMono-Regular', fontWeight: '400', fontSize: 10, lineHeight: 16,
+  },
 });
