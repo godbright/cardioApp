@@ -19,13 +19,20 @@ import { Provider as ReduxProvider } from 'react-redux';
 import { store } from './store';
 import { AppProvider, useApp } from './context/AppContext';
 import RootNavigator from './navigation/RootNavigator';
-import { BluetoothService } from './services/bluetooth';
+import { BluetoothService } from './services/btAdapter';
+import { pushBatch as signalBusPushBatch, flush as signalBusFlush } from './services/signalBus';
+import { getNativeSda } from './native/NativeSda';
 import { startSyncWorker, getPendingCount, getFailedCount } from './services/syncQueue';
 import { DEMO_MODE } from './demo';
 
 if (DEMO_MODE) {
   LogBox.ignoreAllLogs();
 }
+import RNFS from 'react-native-fs';
+import { SHA256 } from 'crypto-js';
+import { consumePendingCaptureId, setLastSavedPath } from './services/recordingStore';
+import { updateRecordingPath, findUnpatchedCapture } from './services/captureService';
+import { ensurePlayableWav } from './utils/wavUtils';
 import { AuthService } from './services/authService';
 import { SettingsService } from './services/settingsService';
 import { getLatestModel, submitDailyMetrics, Stage2NotConfiguredError } from './services/stage2Api';
@@ -115,8 +122,82 @@ function AppInner() {
         }
         if (status === 'notfound') {
           dispatch({ type: 'SET_FIELD', key: 'deviceName', value: '' });
+          signalBusFlush();
+          // Zero the SQI engine immediately so the Capture screen does not show
+          // a stale green reading from the previous BLE session.
+          getNativeSda()?.reset();
         }
       });
+
+      // Fire when HLink delivers a complete WAV recording.
+      // Writes the buffer to device storage, then patches the capture DB record
+      // with the path and SHA-256 so the record is traceable and Stage 2 can
+      // read the file when it syncs.
+      BluetoothService.onRecordingComplete(async (wav, recordingId) => {
+        // 4000 = bytes/sec for 2 kHz 16-bit mono (2000 samples × 2 bytes)
+        const durationS = (wav.length / 4000).toFixed(1);
+        console.log(`[App] recording ${recordingId} ready — ${wav.length} bytes, ${durationS}s audio`);
+
+        try {
+          // ExternalDirectoryPath → /storage/emulated/0/Android/data/com.cardiosleeve/files
+          // Visible in Android file managers; no extra permission needed on API 29+.
+          // Fall back to internal storage if external is unavailable (no SD card, etc).
+          const baseDir = RNFS.ExternalDirectoryPath || RNFS.DocumentDirectoryPath;
+          const dir = `${baseDir}/recordings`;
+          await RNFS.mkdir(dir);
+
+          // Diagnostic: log first 4 bytes so we know if the iPhone sent RIFF/WAV
+          // or raw PCM — determines which path ensurePlayableWav takes below.
+          const header4 = wav.length >= 4 ? wav.toString('ascii', 0, 4) : '??';
+          console.log(`[App] WAV header check: first4="${header4}" (${header4 === 'RIFF' ? 'valid WAV' : 'raw PCM — will wrap'})`);
+
+          // 1. Original WAV — for Stage 2 upload and SHA-256 integrity.
+          //    If the peripheral sent raw PCM (no RIFF header) wrap it now so
+          //    Stage 2 receives a proper .wav file rather than naked samples.
+          const origPath = `${dir}/${recordingId}.wav`;
+          await RNFS.writeFile(origPath, wav.toString('base64'), 'base64');
+          const sha256 = SHA256(wav.toString('binary')).toString();
+
+          // 2. Playback WAV — ensurePlayableWav handles both raw PCM (wraps a
+          //    RIFF header first) and existing WAV files (upsamples if < 4 kHz).
+          //    Android MediaPlayer minimum AudioTrack rate is 4000 Hz.
+          const playWav  = ensurePlayableWav(wav, 2000, 16, 1);
+          const playPath = `${dir}/${recordingId}_play.wav`;
+          await RNFS.writeFile(playPath, playWav.toString('base64'), 'base64');
+
+          // 3. Patch the DB capture record with the original path + hash.
+          // Primary: captureId stored by _commitResult when Stage 1 result was saved.
+          // Fallback: if the BLE transfer completed before _commitResult resolved,
+          // the slot is empty — query the DB for the most recent PCG capture with
+          // no recording path yet (within the last 5 minutes) and patch that one.
+          let captureId = consumePendingCaptureId();
+          if (!captureId) {
+            captureId = await findUnpatchedCapture().catch(() => '');
+            if (captureId) console.log(`[App] captureId resolved via DB fallback: ${captureId}`);
+          }
+          await updateRecordingPath(captureId, origPath, sha256);
+
+          // 4. Notify ResultScreen — point at the playback copy.
+          setLastSavedPath(playPath);
+
+          console.log(`[App] WAV saved → ${origPath} | play → ${playPath} (sha256: ${sha256.slice(0, 12)}…, captureId: ${captureId || '(none)'})`);
+        } catch (err) {
+          console.error('[App] Failed to save WAV:', err);
+        }
+      });
+
+      // Wire raw sample stream → SignalBus (waveform display) + JSI SDA engine (SQI).
+      // The BLE service now fires ONE batch callback per chunk (~250 samples) instead
+      // of one callback per sample. This drops JS-thread work from ~15 000 calls/s to
+      // ~60 calls/s, keeping the thread free for touch events and React renders.
+      BluetoothService.onData((pcm, ecg, count, rateHz) => {
+        // One pushBatch call writes all chunk samples into the SignalBus ring buffer.
+        signalBusPushBatch(pcm, ecg, count);
+
+        // SDA/SQI engine is fed exclusively from the JNI audio callback thread —
+        // calling pushSamples from JS (a second producer) violated the SPSC contract.
+      });
+
       BluetoothService.autoConnect();
     }
 

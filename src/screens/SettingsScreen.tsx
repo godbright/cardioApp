@@ -10,8 +10,9 @@ import Header from '../components/Header';
 import { BluetoothIcon, LogoutIcon, ChevronDown, CameraIcon } from '../components/Icons';
 import { Colors } from '../theme/colors';
 import { setTtsLanguage } from '../services/tts';
-import { BluetoothService } from '../services/bluetooth';
-import type { BluetoothDevice } from '../services/bluetooth';
+import { BluetoothService, BT_STACK } from '../services/btAdapter';
+import { BleService } from '../services/bleService';
+import type { BtDevice } from '../services/btAdapter';
 import { useOrientation } from '../hooks/useOrientation';
 import { useStrings } from '../i18n/useStrings';
 import type { SupportedLang } from '../services/tts';
@@ -148,8 +149,8 @@ export default function SettingsScreen() {
   const { isPortrait } = useOrientation();
   const S = useStrings();
 
-  const [pairedDevices,  setPairedDevices]  = useState<BluetoothDevice[]>([]);
-  const [discovered,     setDiscovered]     = useState<BluetoothDevice[]>([]);
+  const [pairedDevices,  setPairedDevices]  = useState<BtDevice[]>([]);
+  const [discovered,     setDiscovered]     = useState<BtDevice[]>([]);
   const [scanning,       setScanning]       = useState(false);
   const [connecting,     setConnecting]     = useState<string | null>(null);
   const [forgetting,     setForgetting]     = useState<string | null>(null);
@@ -193,12 +194,19 @@ export default function SettingsScreen() {
   async function handleScan() {
     setScanning(true);
     setDiscovered([]);
+    // In BLE mode register a progressive callback so devices appear as discovered.
+    if (BT_STACK === 'ble') {
+      BleService.onDiscoveredDevice(d =>
+        setDiscovered(prev => prev.some(x => x.address === d.address) ? prev : [...prev, d]),
+      );
+    }
     const found = await BluetoothService.startDiscovery();
+    if (BT_STACK === 'ble') BleService.onDiscoveredDevice(null);
     setDiscovered(found);
     setScanning(false);
   }
 
-  function handleForget(device: BluetoothDevice) {
+  function handleForget(device: BtDevice) {
     Alert.alert(
       'Forget device?',
       `Remove "${device.name ?? device.address}" from paired devices? You will need to pair it again to use it.`,
@@ -208,10 +216,13 @@ export default function SettingsScreen() {
           text: 'Forget',
           style: 'destructive',
           onPress: async () => {
-            setForgetting(device.address);
-            await BluetoothService.forgetDevice(device.address);
-            await loadPaired();
-            setForgetting(null);
+            try {
+              setForgetting(device.address);
+              await BluetoothService.forgetDevice(device.address);
+              await loadPaired();
+            } finally {
+              setForgetting(null);
+            }
           },
         },
       ],
@@ -503,7 +514,9 @@ export default function SettingsScreen() {
       {availablePaired.length > 0 && (
         <View style={styles.deviceSection}>
           <View style={styles.deviceSectionHeader}>
-            <Text style={styles.deviceSectionTitle}>{S.settings.pairedDevices}</Text>
+            <Text style={styles.deviceSectionTitle}>
+              {BT_STACK === 'ble' ? 'Known BLE Devices' : S.settings.pairedDevices}
+            </Text>
             <TouchableOpacity onPress={loadPaired}>
               <Text style={styles.refreshLink}>{S.settings.refresh}</Text>
             </TouchableOpacity>

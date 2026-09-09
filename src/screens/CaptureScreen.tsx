@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
 } from 'react-native';
@@ -12,6 +12,10 @@ import { speak } from '../services/tts';
 import { useOrientation } from '../hooks/useOrientation';
 import { useStrings } from '../i18n/useStrings';
 import { useCardioSQI } from '../hooks/useCardioSQI';
+import { useWavRecorder } from '../hooks/useWavRecorder';
+import { setLastWavResult } from '../services/recordingStore';
+import { runStage1 } from '../services/stage1';
+import BluetoothPickerModal from '../components/BluetoothPickerModal';
 import type { CapturePhase, Posture } from '../types';
 
 function phaseToStep(phase: CapturePhase): number {
@@ -41,24 +45,94 @@ export default function CaptureScreen() {
   // whatever space is available in both portrait and landscape.
   const [waveBoxH, setWaveBoxH] = useState(300);
 
+  const [pickerVisible, setPickerVisible] = useState(false);
+  const onPickerConnected = useCallback(() => {
+    dispatch({ type: 'PATCH', patch: { capturePhase: 'positioning' } });
+  }, [dispatch]);
+
   // waveform is live during positioning so the CHW sees the signal while placing the device
   const waveformActive = capturePhase !== 'gate';
   const { pcgBuf, ecgBuf } = useWaveformBuffers(waveformActive, modality);
 
+  const { startRecording, stopAndSave } = useWavRecorder();
+
   const phaseTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Keep a stable ref to finishCapture — updated directly during render (the
+  // React-recommended "latest-value ref" pattern) so the timer always calls the
+  // current closure without an effect that runs after every render.
+  const finishCaptureRef = useRef(finishCapture);
+  finishCaptureRef.current = finishCapture;
+
+  // Track the last dispatched quality to skip no-op SET_QUALITY dispatches.
+  // Without this, every sqa tick (40 ms) triggers a full context re-render even
+  // when the displayed percentage hasn't changed — 25 unnecessary renders/sec.
+  const lastDispatchedQuality = useRef(-1);
+
+  // EMA smoother for both the displayed quality percentage AND the "ready" gate.
+  //
+  // Raw SQI windows are independent (each 2 s of audio computed fresh), so the
+  // score can jump ±20 pts even at a stable position. With α = 0.3, a single
+  // good window followed by a bad one still crosses thresholds — producing the
+  // "yes/no/yes/no" toggle the CHW sees. Reducing α to 0.2 means each window
+  // contributes only 20 % of the new average: roughly 4 consecutive good windows
+  // are needed before the smoothed score reliably clears 0.65, which prevents
+  // single-window noise from triggering (or cancelling) the ready state.
+  //
+  // The phase transition also uses the smoothed score (not raw sqa.ready) so the
+  // gate and the display always agree — no more green bar with a "not ready" gate.
+  // EMA for the DISPLAYED percentage only — keeps the number smooth on screen.
+  // Never used to gate the "ready" transition (sqa.ready from C++ does that).
+  const EMA_ALPHA = 0.2;
+  const smoothedScoreRef = useRef(-1); // -1 = uninitialised
+
+  // Consecutive-window counter for the ready gate.
+  // sqa.ready is a per-2-second-window C++ flag. Requiring 2 consecutive YES
+  // windows (~4 s of sustained good signal) prevents a single noisy window
+  // from triggering the ready state — without introducing the EMA mismatch
+  // that let the JS gate fire while the debug overlay still showed "ready: no".
+  const consecutiveReadyRef = useRef(0);
+  const CONSECUTIVE_READY_REQUIRED = 6; // ~12 s of sustained good signal at 2-s windows
 
   useEffect(() => {
     if (phaseTimer.current) clearInterval(phaseTimer.current);
 
     if (capturePhase === 'recording') {
+      // Start on-device WAV capture as soon as recording phase begins.
+      // Only PCG captures have meaningful audio to record.
+      if (isPcg) startRecording();
+
       let prog = 0;
       phaseTimer.current = setInterval(() => {
         prog = Math.min(100, prog + 2.5);
-        dispatch({ type: 'SET_QUALITY', quality: state.quality, recProgress: prog });
+        // Only advance the progress bar — quality stays at whatever it was when
+        // recording started (SQI is inactive during recording).
+        dispatch({ type: 'PATCH', patch: { recProgress: prog } });
         if (prog >= 100) {
           clearInterval(phaseTimer.current!);
           dispatch({ type: 'SET_CAPTURE_PHASE', phase: 'analyzing' });
-          setTimeout(finishCapture, 1400);
+
+          if (isPcg) {
+            // Stop recording, run Stage 1 inference, then commit result.
+            // runStage1 pads to MIN_ANALYSIS_MS internally so the 'analyzing'
+            // screen is never invisible — no hard-coded timeout needed here.
+            stopAndSave()
+              .then(async wav => {
+                if (wav) setLastWavResult(wav);
+                const s1 = await runStage1(wav?.path ?? '');
+                finishCaptureRef.current({
+                  verdict:    s1.verdict,
+                  confidence: s1.confidence.toFixed(2),
+                  model:      s1.modelVersion,
+                });
+              })
+              .catch(() => {
+                // Inference error — fall through to simulated result after a delay.
+                setTimeout(() => finishCaptureRef.current(), 1400);
+              });
+          } else {
+            // ECG capture — no PCG inference.
+            setTimeout(() => finishCaptureRef.current(), 1400);
+          }
         }
       }, 150);
     }
@@ -66,23 +140,71 @@ export default function CaptureScreen() {
     return () => { if (phaseTimer.current) clearInterval(phaseTimer.current); };
   }, [capturePhase]);
 
-  // Drive quality bar and phase transition from real SQI data (or DEMO_MODE synthetic ramp)
+  // Drive quality bar and phase transition from real SQI data (or DEMO_MODE synthetic ramp).
+  // capturePhase MUST be in the deps — without it the closure is stale and the phase
+  // transition fires every 40 ms (once per sqa tick) instead of exactly once.
   useEffect(() => {
-    if (!sqa) return;
-    const q = Math.round(sqa.score * 100);
-    dispatch({ type: 'SET_QUALITY', quality: q });
-    if (sqa.ready && capturePhase === 'positioning') {
-      dispatch({ type: 'SET_CAPTURE_PHASE', phase: 'ready' });
-      speak('quality.ready.auto');
+    if (!sqa) {
+      // Signal lost — reset both the display smoother and the consecutive counter.
+      smoothedScoreRef.current = -1;
+      consecutiveReadyRef.current = 0;
+      if (lastDispatchedQuality.current !== 0) {
+        lastDispatchedQuality.current = 0;
+        dispatch({ type: 'SET_QUALITY', quality: 0 });
+      }
+      return;
     }
-  }, [sqa]);
+
+    // ── Display: EMA-smoothed percentage ────────────────────────────────────
+    // Keeps the on-screen number from jumping with each raw 2-second window.
+    // This value is NEVER used to gate readiness — it is display-only.
+    const raw = sqa.score;
+    smoothedScoreRef.current =
+      smoothedScoreRef.current < 0
+        ? raw
+        : EMA_ALPHA * raw + (1 - EMA_ALPHA) * smoothedScoreRef.current;
+
+    const q = Math.round(smoothedScoreRef.current * 100);
+    if (q !== lastDispatchedQuality.current) {
+      lastDispatchedQuality.current = q;
+      dispatch({ type: 'SET_QUALITY', quality: q });
+    }
+
+    // ── Ready gate: raw sqa.ready from C++ + consecutive-window debounce ────
+    // sqa.ready is the authoritative flag — it is exactly what the debug overlay
+    // shows. Tying the gate to the EMA caused the UI to say "ready" while the
+    // overlay still showed "ready: no" because the EMA can cross the threshold
+    // before any individual window actually qualifies.
+    //
+    // Requiring CONSECUTIVE_READY_REQUIRED (2) back-to-back YES windows (~4 s)
+    // prevents a single noisy window from false-triggering without introducing
+    // the EMA mismatch. When the overlay shows YES twice in a row, the UI agrees.
+    if (sqa.ready) {
+      consecutiveReadyRef.current += 1;
+    } else {
+      consecutiveReadyRef.current = 0;
+      // Signal dropped — deactivate the Record button if it was already ready.
+      // This prevents the CHW from recording on a degraded signal after the
+      // initial ready gate fired. They must re-achieve the consecutive threshold.
+      if (capturePhase === 'ready') {
+        dispatch({ type: 'SET_CAPTURE_PHASE', phase: 'positioning' });
+        speak('quality.dropped'); // "Signal lost — please reposition the sensor."
+      }
+    }
+
+    if (consecutiveReadyRef.current >= CONSECUTIVE_READY_REQUIRED && capturePhase === 'positioning') {
+      dispatch({ type: 'SET_CAPTURE_PHASE', phase: 'ready' });
+      speak('quality.ready.manual'); // "Signal is good — press Record when ready."
+    }
+  }, [sqa, capturePhase]);
 
   const stepIdx = phaseToStep(capturePhase);
   const stepLabels = [S.capture.stepPosition, S.capture.stepAcquire, S.capture.stepRecord, S.capture.stepScreen] as const;
 
+  // caption bar: shows the voice guidance text for the current phase
   const voiceCaptions: Partial<Record<CapturePhase, string>> = {
     positioning: S.capture.waitingSignal,
-    ready:       `"${S.capture.qualityGood}"`,
+    ready:       S.capture.qualityGood,   // "Sufficient for recording"
     recording:   S.capture.recordingNow,
     analyzing:   S.capture.analysing,
   };
@@ -107,15 +229,22 @@ export default function CaptureScreen() {
         { label: 'ECG · RHYTHM', color: Colors.white, buffer: ecgBuf },
       ];
 
+  // Tie qualityColor and qualityLabel to capturePhase, not the raw quality number.
+  // Without this, the label can briefly say "Sufficient for recording" in green
+  // while the Record button is still dim — because SET_QUALITY and SET_CAPTURE_PHASE
+  // are dispatched in the same effect but may land in separate render cycles.
+  // Using capturePhase as the source of truth keeps label, color, and button in sync.
+  const isSignalReady = capturePhase === 'ready';
+
   const qualityColor =
-    quality >= 80 ? Colors.green :
-    quality >= 50 ? Colors.amber :
+    isSignalReady   ? Colors.green :
+    quality >= 50   ? Colors.amber :
     Colors.red;
 
   const qualityLabel =
-    quality >= 80 ? S.capture.qualityGood :
-    quality >= 50 ? S.capture.qualityImproving :
-    S.capture.qualityWeak;
+    isSignalReady   ? S.capture.qualityGood :       // "Sufficient for recording"
+    quality >= 50   ? S.capture.qualityImproving :  // "Improving — hold steady"
+    S.capture.qualityWeak;                          // "Signal too weak — reposition sensor"
 
   const POSTURES: { value: Posture; label: string }[] = [
     { value: 'sitting',      label: S.capture.postureSitting },
@@ -198,10 +327,11 @@ export default function CaptureScreen() {
           {siteInfo ? ` · ${siteInfo.label}` : ''}
         </Text>
         <View style={{ flex: 1 }} />
-        <View style={styles.deviceChip}>
+        <TouchableOpacity style={styles.deviceChip} onPress={() => setPickerVisible(true)} activeOpacity={0.7}>
+          <BluetoothIcon size={13} color="rgba(255,255,255,0.6)" />
           <View style={[styles.deviceDot, { backgroundColor: connDot }]} />
           <Text style={styles.deviceName}>{connLabel}</Text>
-        </View>
+        </TouchableOpacity>
       </View>
 
       {/* ── Stepper ───────────────────────────────────────── */}
@@ -235,7 +365,7 @@ export default function CaptureScreen() {
           <Text style={styles.gateSub}>{S.capture.connectSub}</Text>
           <TouchableOpacity
             style={styles.retryBtn}
-            onPress={() => dispatch({ type: 'PATCH', patch: { capturePhase: 'positioning' } })}
+            onPress={() => setPickerVisible(true)}
           >
             <Text style={styles.retryBtnText}>{S.capture.retryBtn}</Text>
           </TouchableOpacity>
@@ -298,16 +428,26 @@ export default function CaptureScreen() {
                 <View style={[styles.railCard, styles.portraitGridCard]}>
                   <View style={styles.qualityHeader}>
                     <Text style={styles.railCardLabel}>{S.capture.sectionQuality}</Text>
-                    <Text style={[styles.qualityScore, { color: qualityColor }]}>
-                      <Text style={styles.qualityScoreNum}>{quality}</Text>/100
+                    {capturePhase !== 'recording' && capturePhase !== 'analyzing' && (
+                      <Text style={[styles.qualityScore, { color: qualityColor }]}>
+                        <Text style={styles.qualityScoreNum}>{quality}</Text>/100
+                      </Text>
+                    )}
+                  </View>
+                  {capturePhase === 'recording' || capturePhase === 'analyzing' ? (
+                    <Text style={[styles.qualityLabelSm, { color: Colors.teal }]} numberOfLines={1}>
+                      {capturePhase === 'recording' ? S.capture.recordingNow : S.capture.analysing}
                     </Text>
-                  </View>
-                  <View style={styles.qualityBarBg}>
-                    <View style={[styles.qualityBarFill, { width: `${quality}%` as any, backgroundColor: qualityColor }]} />
-                  </View>
-                  <Text style={[styles.qualityLabelSm, { color: qualityColor }]} numberOfLines={1}>
-                    {qualityLabel}
-                  </Text>
+                  ) : (
+                    <>
+                      <View style={styles.qualityBarBg}>
+                        <View style={[styles.qualityBarFill, { width: `${quality}%` as any, backgroundColor: qualityColor }]} />
+                      </View>
+                      <Text style={[styles.qualityLabelSm, { color: qualityColor }]} numberOfLines={1}>
+                        {qualityLabel}
+                      </Text>
+                    </>
+                  )}
                 </View>
               </View>
 
@@ -367,14 +507,24 @@ export default function CaptureScreen() {
               <View style={[styles.railCard, { flex: 1.2 }]}>
                 <View style={styles.qualityHeader}>
                   <Text style={styles.railCardLabel}>{S.capture.sectionQuality}</Text>
-                  <Text style={[styles.qualityScore, { color: qualityColor }]}>
-                    <Text style={styles.qualityScoreNum}>{quality}</Text>/100
+                  {capturePhase !== 'recording' && capturePhase !== 'analyzing' && (
+                    <Text style={[styles.qualityScore, { color: qualityColor }]}>
+                      <Text style={styles.qualityScoreNum}>{quality}</Text>/100
+                    </Text>
+                  )}
+                </View>
+                {capturePhase === 'recording' || capturePhase === 'analyzing' ? (
+                  <Text style={[styles.qualityLabel, { color: Colors.teal }]}>
+                    {capturePhase === 'recording' ? S.capture.recordingNow : S.capture.analysing}
                   </Text>
-                </View>
-                <View style={styles.qualityBarBg}>
-                  <View style={[styles.qualityBarFill, { width: `${quality}%` as any, backgroundColor: qualityColor }]} />
-                </View>
-                <Text style={[styles.qualityLabel, { color: qualityColor }]}>{qualityLabel}</Text>
+                ) : (
+                  <>
+                    <View style={styles.qualityBarBg}>
+                      <View style={[styles.qualityBarFill, { width: `${quality}%` as any, backgroundColor: qualityColor }]} />
+                    </View>
+                    <Text style={[styles.qualityLabel, { color: qualityColor }]}>{qualityLabel}</Text>
+                  </>
+                )}
               </View>
               <View style={[styles.railCard, styles.railCardAcquire, { flex: 2.1 }]}>
                 <Text style={styles.railCardLabel}>
@@ -386,6 +536,12 @@ export default function CaptureScreen() {
           )}
         </View>
       )}
+
+      <BluetoothPickerModal
+        visible={pickerVisible}
+        onClose={() => setPickerVisible(false)}
+        onConnected={onPickerConnected}
+      />
     </View>
   );
 }

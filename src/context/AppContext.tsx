@@ -4,7 +4,11 @@ import { AUSCULTATION_SITES, ECG_LEADS } from '../constants/sites';
 import { DEMO_MODE } from '../demo';
 import { SettingsService } from '../services/settingsService';
 import { loadAllPatients, savePatient as dbSavePatient, softDeletePatient as dbSoftDeletePatient } from '../services/patientService';
-import { saveCapture as dbSaveCapture, closeSession as dbCloseSession } from '../services/captureService';
+import { saveCapture as dbSaveCapture, closeSession as dbCloseSession, updateRecordingPath } from '../services/captureService';
+import { setPendingCaptureId, clearLastSavedPath, consumeLastWavResult, setLastSavedPath } from '../services/recordingStore';
+import RNFS from 'react-native-fs';
+import { Buffer } from 'buffer';
+import { ensurePlayableWav } from '../utils/wavUtils';
 import { onStage2Result, triggerFlush } from '../services/syncQueue';
 import { store } from '../store';
 import { logoutAuth } from '../store/slices/authSlice';
@@ -310,6 +314,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [state.patients, state.deviceSiteId]);
 
   const newPatient = useCallback(() => {
+    clearLastSavedPath();
     dispatch({ type: 'PATCH', patch: { view: 'patient', editing: false, formName: '', formAge: '', formSex: '', formRhd: '', formHeight: '', formWeight: '', formBpSys: '', formBpDia: '', formError: '' } });
   }, []);
 
@@ -335,13 +340,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const updated: Patient = { ...state.currentPatient, name, age: parseInt(state.formAge, 10), sex: (state.formSex || state.currentPatient.sex) as Patient['sex'], rhd: (state.formRhd || state.currentPatient.rhd) as Patient['rhd'], ...vitals };
       dispatch({ type: 'UPSERT_PATIENT', patient: updated });
       dispatch({ type: 'PATCH', patch: { currentPatient: updated, view: 'hub', formError: '' } });
-      dbSavePatient(updated, workerId, siteId).catch(e => console.error('[DB] savePatient update:', e));
+      dbSavePatient(updated, workerId, siteId)
+        .then(() => console.log('[DB] savePatient update OK — study_code:', updated.id))
+        .catch(e => console.error('[DB] savePatient update FAILED:', e));
     } else {
       const id = nextCode();
       const p: Patient = { id, name, age: parseInt(state.formAge, 10), sex: state.formSex as Patient['sex'] || '', rhd: state.formRhd as Patient['rhd'] || '', lastExam: 'Today', hs: 'none', hr: 'none', ...vitals };
       dispatch({ type: 'UPSERT_PATIENT', patient: p });
       dispatch({ type: 'PATCH', patch: { currentPatient: p, view: 'hub', page: 0, formError: '' } });
-      dbSavePatient(p, workerId, siteId).catch(e => console.error('[DB] savePatient create:', e));
+      dbSavePatient(p, workerId, siteId)
+        .then(() => console.log('[DB] savePatient create OK — study_code:', p.id))
+        .catch(e => console.error('[DB] savePatient create FAILED:', e));
     }
   }, [state, nextCode]);
 
@@ -480,7 +489,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         verdict:          stage1Verdict,
         confidence:       r?.confidence ? parseFloat(r.confidence) : undefined,
         modelVersion:     r?.model,
-      }).then(() => triggerFlush()).catch(e => console.error('[DB] saveCapture:', e));
+      }).then(async captureId => {
+        if (captureId) {
+          setPendingCaptureId(captureId);
+          // Patch WAV path now if on-device recording already finished — this
+          // also creates the sync_queue row so the worker sees the file path.
+          const wav = consumeLastWavResult();
+          if (wav) {
+            await updateRecordingPath(captureId, wav.path, wav.sha256).catch(
+              e => console.warn('[DB] updateRecordingPath:', e),
+            );
+            // Create 8kHz playback copy so ResultScreen can replay the recording.
+            try {
+              const rawB64  = await RNFS.readFile(wav.path, 'base64');
+              const rawBuf  = Buffer.from(rawB64, 'base64');
+              const playBuf = ensurePlayableWav(rawBuf, 2000, 16, 1);
+              const playPath = wav.path.replace(/\.wav$/, '_play.wav');
+              await RNFS.writeFile(playPath, playBuf.toString('base64'), 'base64');
+              setLastSavedPath(playPath);
+            } catch (e) {
+              console.warn('[AppContext] playback WAV creation failed:', e);
+            }
+          }
+        }
+        triggerFlush();
+      }).catch(e => console.error('[DB] saveCapture:', e));
     }
 
     if (addToProgress && siteId) {
@@ -495,9 +528,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [state]);
 
   // After a successful (non-inconclusive) capture: save + go to position select for the next one.
+  // Reset capturePhase to 'gate' so the SQI hook and phase timer start clean on the next capture.
   const nextCapture = useCallback(() => {
     _commitResult({ addToProgress: true, updatePatientStatus: true });
-    dispatch({ type: 'PATCH', patch: { view: 'position', result: null } });
+    dispatch({ type: 'PATCH', patch: { view: 'position', result: null, capturePhase: 'gate', recProgress: 0, quality: 0 } });
   }, [_commitResult]);
 
   // Save + return to the patient hub (used after all positions done, or manual "Back to Overview").
@@ -509,7 +543,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Inconclusive "Try Again": save to DB for audit, do NOT mark site done or update patient status.
   const retryCapture = useCallback(() => {
     _commitResult({ addToProgress: false, updatePatientStatus: false });
-    dispatch({ type: 'PATCH', patch: { view: 'position', result: null } });
+    dispatch({ type: 'PATCH', patch: { view: 'position', result: null, capturePhase: 'gate', recProgress: 0, quality: 0 } });
   }, [_commitResult]);
 
   // Save + close session + return to patient list.
@@ -518,6 +552,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (state.currentPatient) {
       dbCloseSession(state.currentPatient.id).catch(e => console.error('[DB] closeSession:', e));
     }
+    clearLastSavedPath();
     dispatch({ type: 'PATCH', patch: { view: 'history', currentPatient: null, sessionCapturedSites: [], sessionCapturedLeads: [] } });
   }, [_commitResult, state.currentPatient]);
 

@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
 } from 'react-native';
@@ -8,12 +8,23 @@ import { useApp } from '../context/AppContext';
 import Header from '../components/Header';
 import { StaticTrace } from '../components/WaveformView';
 import {
-  HeartIcon, ActivityIcon, AlertTriangleIcon, DownloadIcon, PlayIcon,
+  HeartIcon, ActivityIcon, AlertTriangleIcon, DownloadIcon,
+  PlayIcon, PauseIcon, StopIcon, SpeakerIcon,
 } from '../components/Icons';
 import { Colors } from '../theme/colors';
 import { AUSCULTATION_SITES, ECG_LEADS } from '../constants/sites';
 import { useOrientation } from '../hooks/useOrientation';
 import { useStrings } from '../i18n/useStrings';
+import { useAudioPlayer } from '../hooks/useAudioPlayer';
+import { getCaptureForSite, SiteCapture } from '../services/captureService';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
 
 // ─── Static trace ─────────────────────────────────────────────────────────────
 
@@ -92,7 +103,7 @@ function RangeBar({ interval }: { interval: Interval }) {
 
 export default function MeasurementsScreen() {
   const { state, dispatch } = useApp();
-  const { measureModality: mod, measureTab, audioPlaying, currentPatient: p } = state;
+  const { measureModality: mod, measureTab, currentPatient: p } = state;
   const insets = useSafeAreaInsets();
   const { isPortrait } = useOrientation();
   const S = useStrings();
@@ -102,6 +113,24 @@ export default function MeasurementsScreen() {
   const active    = tabs.find(t => t.id === measureTab) ?? tabs[0];
   const intervals = NO_INTERVALS;
 
+  // ── Per-tab data — reloaded whenever the active tab or patient changes ────
+  const activeTab = measureTab ?? tabs[0]?.id ?? '';
+
+  const [siteData, setSiteData] = useState<SiteCapture>({
+    playbackPath: null, verdict: null, confidence: null,
+    modelVersion: null, posture: null, capturedAt: null,
+  });
+
+  useEffect(() => {
+    if (!p?.id) return;
+    const modality: 'pcg' | 'ecg' = isPcg ? 'pcg' : 'ecg';
+    getCaptureForSite(p.id, activeTab, modality)
+      .then(data => setSiteData(data))
+      .catch(() => {/* no capture yet — keep empty state */});
+  }, [activeTab, p?.id, isPcg]);
+
+  const audio = useAudioPlayer(siteData.playbackPath);
+
   const tracePoints = useMemo(() => buildStaticPoints(500, isPcg ? 'pcg' : 'ecg'), [isPcg]);
 
   const modalityTitle = isPcg ? S.measurements.heartSound : S.measurements.heartRhythm;
@@ -109,9 +138,6 @@ export default function MeasurementsScreen() {
 
   function selectTab(id: string) {
     dispatch({ type: 'PATCH', patch: { measureTab: id } });
-  }
-  function toggleAudio(idx: number) {
-    dispatch({ type: 'SET_FIELD', key: 'audioPlaying', value: audioPlaying === idx ? null : idx });
   }
 
   // ── Reusable card JSX ──────────────────────────────────────────────────────
@@ -163,23 +189,26 @@ export default function MeasurementsScreen() {
     </View>
   );
 
-  const analysisVerdict = isPcg
-    ? p?.hs === 'normal'            ? 'Normal'
-    : p?.hs === 'abnormal-confirmed'? 'Abnormal — AS suspected'
-    : p?.hs === 'abnormal-pending'  ? 'Abnormal — awaiting Stage 2'
-    : p?.hs === 'inconclusive'      ? 'Inconclusive'
-    : '—'
+  // ── Per-site derived display values ─────────────────────────────────────────
+
+  const analysisVerdict =
+    siteData.verdict === 'normal'      ? 'Normal' :
+    siteData.verdict === 'abnormal'    ? 'Abnormal — AS suspected' :
+    siteData.verdict === 'inconclusive'? 'Inconclusive' :
+    '—';
+
+  const analysisColor =
+    siteData.verdict === 'normal'      ? Colors.green :
+    siteData.verdict === 'inconclusive'? Colors.amber :
+    siteData.verdict === 'abnormal'    ? Colors.red   :
+    Colors.textLight;
+
+  const confidencePct = siteData.confidence != null
+    ? `${Math.round(siteData.confidence * 100)}%`
     : '—';
 
-  const analysisColor = isPcg
-    ? p?.hs === 'normal'             ? Colors.green
-    : p?.hs === 'inconclusive'       ? Colors.amber
-    : (p?.hs === 'abnormal-confirmed' || p?.hs === 'abnormal-pending') ? Colors.red
-    : Colors.textLight
-    : Colors.textLight;
-
-  const confidencePct = p?.hsConfidence
-    ? `${Math.round(parseFloat(p.hsConfidence) * 100)}%`
+  const capturedAtStr = siteData.capturedAt
+    ? siteData.capturedAt.toLocaleDateString()
     : '—';
 
   const analysisCard = (
@@ -188,14 +217,14 @@ export default function MeasurementsScreen() {
         <Text style={styles.analysisKicker}>
           {isPcg ? S.measurements.murmurAnalysis : S.measurements.rhythmAnalysis}
         </Text>
-
+        <Text style={styles.analysisTabLabel}>{active?.label ?? '—'}</Text>
       </View>
       <Text style={[styles.analysisResult, { color: analysisColor }]}>
         {analysisVerdict}
       </Text>
       <Text style={styles.analysisConf}>
         {isPcg
-          ? (p?.hsConfidence ? `${S.result.confidence} ${confidencePct}` : 'Confidence — pending')
+          ? (siteData.confidence != null ? `Confidence ${confidencePct}` : 'Confidence — pending')
           : 'ECG analysis pipeline pending'}
       </Text>
     </View>
@@ -206,18 +235,18 @@ export default function MeasurementsScreen() {
       <Text style={styles.cardLabel}>{S.measurements.sessionSummary}</Text>
       {(isPcg
         ? [
-            { label: 'Posture',     value: p?.hsPosture ?? '—' },
-            { label: 'Heart rate',  value: '—'                 },
-            { label: 'RR interval', value: '—'                 },
-            { label: 'Confidence',  value: confidencePct       },
-            { label: 'Recorded',    value: '—'                 },
+            { label: 'Valve site',  value: active?.label    ?? '—' },
+            { label: 'Posture',     value: siteData.posture  ?? '—' },
+            { label: 'Heart rate',  value: '—'                      },
+            { label: 'Confidence',  value: confidencePct             },
+            { label: 'Recorded',    value: capturedAtStr             },
           ]
         : [
-            { label: 'Posture',        value: p?.hrPosture ?? '—' },
-            { label: 'Heart rate',     value: '—'                 },
-            { label: 'RR interval',    value: '—'                 },
-            { label: 'Sampling',       value: '—'                 },
-            { label: 'Leads captured', value: '—'                 },
+            { label: 'Lead',           value: active?.label   ?? '—' },
+            { label: 'Posture',        value: siteData.posture ?? '—' },
+            { label: 'Heart rate',     value: '—'                     },
+            { label: 'RR interval',    value: '—'                     },
+            { label: 'Recorded',       value: capturedAtStr            },
           ]
       ).map(row => (
         <View key={row.label} style={styles.summaryRow}>
@@ -230,19 +259,75 @@ export default function MeasurementsScreen() {
 
   const playbackCard = (
     <View style={styles.playbackCard}>
-      <Text style={styles.cardLabel}>{S.measurements.playback}</Text>
-      {[
-        { label: S.measurements.normalSpeed, dur: '0:15', idx: 0 },
-        { label: S.measurements.halfSpeed,   dur: '0:30', idx: 1 },
-      ].map(({ label, dur, idx }) => (
-        <TouchableOpacity key={idx} style={styles.playRow} onPress={() => toggleAudio(idx)}>
-          <View style={styles.playBtn}>
-            <PlayIcon size={14} color={Colors.textDark} />
+      {/* Header */}
+      <View style={styles.playbackHeader}>
+        <View style={styles.playbackIconBox}>
+          <SpeakerIcon size={14} color={Colors.teal} />
+        </View>
+        <Text style={styles.cardLabel}>{S.measurements.playback}</Text>
+        {!siteData.playbackPath && (
+          <View style={styles.playbackPill}>
+            <Text style={styles.playbackPillText}>Awaiting transfer…</Text>
           </View>
-          <Text style={styles.playLabel}>{label}</Text>
-          <Text style={styles.playDur}>{dur}</Text>
-        </TouchableOpacity>
-      ))}
+        )}
+      </View>
+
+      {!siteData.playbackPath ? (
+        <Text style={styles.playbackNote}>
+          The recording will appear here once the BLE transfer completes.
+        </Text>
+      ) : audio.state === 'error' ? (
+        <Text style={styles.playbackError}>Could not load recording.</Text>
+      ) : (
+        <>
+          {/* Progress bar */}
+          <View style={styles.playbackProgress}>
+            <View style={[
+              styles.playbackProgressFill,
+              {
+                width: audio.duration > 0
+                  ? `${(audio.position / audio.duration) * 100}%` as any
+                  : '0%',
+              },
+            ]} />
+          </View>
+
+          {/* Time row */}
+          <View style={styles.playbackTimes}>
+            <Text style={styles.playbackTime}>{formatTime(audio.position)}</Text>
+            <Text style={styles.playbackTime}>
+              {audio.duration > 0 ? formatTime(audio.duration) : '--:--'}
+            </Text>
+          </View>
+
+          {/* Controls */}
+          <View style={styles.playbackControls}>
+            <TouchableOpacity
+              style={styles.pbStopBtn}
+              onPress={audio.stop}
+              disabled={audio.state === 'ready' || audio.state === 'loading'}
+            >
+              <StopIcon size={13} color={Colors.textMid} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.pbPlayBtn,
+                audio.state === 'loading' && styles.pbPlayBtnDim,
+              ]}
+              onPress={audio.state === 'playing' ? audio.pause : audio.play}
+              disabled={audio.state === 'loading'}
+            >
+              {audio.state === 'playing'
+                ? <PauseIcon size={18} color={Colors.white} />
+                : <PlayIcon  size={18} color={Colors.white} />
+              }
+            </TouchableOpacity>
+
+            <Text style={styles.pbSpeedNote}>Normal speed</Text>
+          </View>
+        </>
+      )}
     </View>
   );
 
@@ -456,8 +541,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFF', borderRadius: 12,
     borderWidth: 1, borderColor: '#ffff', padding: 16, gap: 5,
   },
-  analysisTop:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  analysisKicker: { fontSize: 11, fontFamily: 'IBMPlexMono-Regular', fontWeight: '400', color: Colors.red, letterSpacing: 2, textTransform: 'uppercase' },
+  analysisTop:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  analysisKicker:   { fontSize: 11, fontFamily: 'IBMPlexMono-Regular', fontWeight: '400', color: Colors.red, letterSpacing: 2, textTransform: 'uppercase' },
+  analysisTabLabel: { fontSize: 11, fontFamily: 'IBMPlexMono-Regular', fontWeight: '400', color: Colors.textLight },
   analysisResult: { fontSize: 20, fontFamily: 'IBMPlexSans-Bold', fontWeight: '700', color: Colors.red, letterSpacing: -0.3 },
   analysisConf:   { fontSize: 12, color: Colors.textMid },
 
@@ -480,17 +566,58 @@ const styles = StyleSheet.create({
   // Playback card
   playbackCard: {
     backgroundColor: Colors.white, borderRadius: 12,
-    borderWidth: 1, borderColor: Colors.border, padding: 16,
+    borderWidth: 1, borderColor: Colors.border, padding: 16, gap: 10,
   },
-  playRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.borderFaint,
+  playbackHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  playbackIconBox: {
+    width: 28, height: 28, borderRadius: 7,
+    backgroundColor: '#EBF9F9', alignItems: 'center', justifyContent: 'center',
   },
-  playBtn: {
-    width: 32, height: 32, borderRadius: 16,
+  playbackPill: {
+    marginLeft: 'auto' as any, backgroundColor: Colors.bgWarm, borderRadius: 20,
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  playbackPillText: {
+    fontFamily: 'IBMPlexSans-Regular', fontSize: 11, fontWeight: '400', color: Colors.textLight,
+  },
+  playbackNote: {
+    fontFamily: 'IBMPlexSans-Regular', fontSize: 13, fontWeight: '400',
+    color: Colors.textLight, fontStyle: 'italic', lineHeight: 20,
+  },
+  playbackError: {
+    fontFamily: 'IBMPlexSans-Regular', fontSize: 12, fontWeight: '400', color: Colors.red,
+  },
+  playbackProgress: {
+    height: 4, backgroundColor: Colors.borderLight, borderRadius: 2, overflow: 'hidden',
+  },
+  playbackProgressFill: {
+    height: 4, backgroundColor: Colors.teal, borderRadius: 2,
+  },
+  playbackTimes: { flexDirection: 'row', justifyContent: 'space-between' },
+  playbackTime: {
+    fontFamily: 'IBMPlexMono-Regular', fontSize: 11, fontWeight: '400', color: Colors.textLight,
+  },
+  playbackControls: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  pbStopBtn: {
+    width: 34, height: 34, borderRadius: 8,
     backgroundColor: Colors.bgWarm, borderWidth: 1, borderColor: Colors.border,
     alignItems: 'center', justifyContent: 'center',
   },
+  pbPlayBtn: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: Colors.teal,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: Colors.teal, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
+  },
+  pbPlayBtnDim: { backgroundColor: Colors.border, shadowOpacity: 0, elevation: 0 },
+  pbSpeedNote: {
+    fontFamily: 'IBMPlexSans-Regular', fontSize: 12, fontWeight: '400',
+    color: Colors.textMid, flex: 1,
+  },
+  // Legacy rows — kept for layout reference, no longer rendered
+  playRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  playBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   playLabel: { flex: 1, fontSize: 13, color: Colors.textDark },
   playDur:   { fontSize: 12, color: Colors.textLight },
 

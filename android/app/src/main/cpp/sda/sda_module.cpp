@@ -4,6 +4,7 @@
 #include <memory>
 #include "sqa_engine.h"
 #include "sqa_host_object.h"
+#include "mel_spec.h"
 
 #define LOG_TAG "SdaModule"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -72,6 +73,24 @@ Java_com_cardiosleeve_sda_SdaJni_nativeSetMode(JNIEnv*, jobject, jint mode) {
 JNIEXPORT void JNICALL
 Java_com_cardiosleeve_sda_SdaJni_nativeReset(JNIEnv*, jobject) {
     if (g_engine) g_engine->reset();
+}
+
+// Compute log-mel spectrogram for Stage 1 inference.
+// Returns a jfloatArray of MEL_OUT_SIZE (4032) floats in [mel][frame] row-major
+// order, matching the (1,64,63,1) TFLite input tensor, or null on error.
+JNIEXPORT jfloatArray JNICALL
+Java_com_cardiosleeve_sda_SdaJni_nativeComputeMelSpec(
+        JNIEnv* env, jobject, jstring j_path) {
+    const char* path = env->GetStringUTFChars(j_path, nullptr);
+    const MelResult result = computeMelSpec(path);
+    env->ReleaseStringUTFChars(j_path, path);
+
+    if (!result.ok) return nullptr;
+
+    jfloatArray arr = env->NewFloatArray(MEL_OUT_SIZE);
+    if (!arr) return nullptr;
+    env->SetFloatArrayRegion(arr, 0, MEL_OUT_SIZE, result.data);
+    return arr;
 }
 
 } // extern "C"

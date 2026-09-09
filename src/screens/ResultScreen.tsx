@@ -1,16 +1,19 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import {
   CheckIcon, AlertTriangleIcon, AlertCircleIcon,
   ActivityIcon, HeartIcon, SpeakerIcon, DownloadIcon,
+  PlayIcon, PauseIcon, StopIcon,
 } from '../components/Icons';
 import { Colors } from '../theme/colors';
 import { getSiteById, AUSCULTATION_SITES, ECG_LEADS } from '../constants/sites';
 import { speakResult } from '../services/tts';
 import { useOrientation } from '../hooks/useOrientation';
 import { useStrings } from '../i18n/useStrings';
+import { getLastSavedPath, onPathAvailable } from '../services/recordingStore';
+import { useAudioPlayer } from '../hooks/useAudioPlayer';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -32,6 +35,12 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function ResultScreen() {
@@ -42,6 +51,18 @@ export default function ResultScreen() {
   const S = useStrings();
 
   const siteInfo = site ? getSiteById(site) : null;
+
+  // ── Recording playback ──────────────────────────────────────────────────────
+  // The WAV file arrives over BLE after the UI timer completes (store-and-forward).
+  // We start with whatever path is already saved; if it's empty we register a
+  // listener so the play button enables itself once the transfer finishes.
+  const [recordingPath, setRecordingPath] = useState<string | null>(() => getLastSavedPath() || null);
+  const audio = useAudioPlayer(recordingPath);
+
+  useEffect(() => {
+    if (recordingPath) return; // already have it
+    return onPathAvailable(p => setRecordingPath(p));
+  }, []);
 
   useEffect(() => {
     if (!result) return;
@@ -166,6 +187,70 @@ export default function ResultScreen() {
               )}
             </View>
 
+            {/* ── Audio playback card (PCG only) ─────────────── */}
+            {isPcg && (
+              <View style={styles.audioCard}>
+                <View style={styles.audioHeader}>
+                  <View style={styles.audioIconBox}>
+                    <SpeakerIcon size={14} color={Colors.teal} />
+                  </View>
+                  <Text style={styles.audioLabel}>HEART SOUND RECORDING</Text>
+                  {!recordingPath && (
+                    <View style={styles.audioPill}>
+                      <Text style={styles.audioPillText}>Transfer in progress…</Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* Progress bar */}
+                <View style={styles.audioProgress}>
+                  <View style={[
+                    styles.audioProgressFill,
+                    {
+                      width: audio.duration > 0
+                        ? `${(audio.position / audio.duration) * 100}%` as any
+                        : '0%',
+                    },
+                  ]} />
+                </View>
+
+                {/* Time stamps */}
+                <View style={styles.audioTimes}>
+                  <Text style={styles.audioTime}>{formatTime(audio.position)}</Text>
+                  <Text style={styles.audioTime}>{audio.duration > 0 ? formatTime(audio.duration) : '--:--'}</Text>
+                </View>
+
+                {/* Controls */}
+                <View style={styles.audioControls}>
+                  <TouchableOpacity
+                    style={styles.audioStopBtn}
+                    onPress={audio.stop}
+                    disabled={audio.state === 'idle' || audio.state === 'loading' || audio.state === 'ready' || !recordingPath}
+                  >
+                    <StopIcon size={14} color={Colors.textMid} />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.audioPlayBtn,
+                      (!recordingPath || audio.state === 'loading' || audio.state === 'error') && styles.audioPlayBtnDim,
+                    ]}
+                    onPress={audio.state === 'playing' ? audio.pause : audio.play}
+                    disabled={!recordingPath || audio.state === 'loading' || audio.state === 'error'}
+                  >
+                    {audio.state === 'playing'
+                      ? <PauseIcon  size={22} color={Colors.white} />
+                      : <PlayIcon   size={22} color={Colors.white} />
+                    }
+                  </TouchableOpacity>
+                </View>
+
+                {audio.state === 'error' && (
+                  <Text style={styles.audioError}>Could not load recording.</Text>
+                )}
+              </View>
+            )}
+
             {/* Voice guidance card */}
             <View style={styles.voiceCard}>
               <View style={styles.voiceHeader}>
@@ -282,6 +367,64 @@ export default function ResultScreen() {
               <DetailRow label="Result"       value={
                 isNormal ? 'Normal' : isAbnormal ? 'Abnormal' : 'Inconclusive'
               } />
+
+              {/* ── Compact inline audio player ────────────────── */}
+              <View style={styles.detailDivider} />
+              <Text style={styles.detailHead}>PLAYBACK</Text>
+
+              {!recordingPath ? (
+                <View style={styles.compactPill}>
+                  <Text style={styles.compactPillText}>Awaiting transfer…</Text>
+                </View>
+              ) : audio.state === 'error' ? (
+                <Text style={styles.compactError}>Could not load recording.</Text>
+              ) : (
+                <View style={styles.compactPlayer}>
+                  {/* Controls */}
+                  <View style={styles.compactControls}>
+                    <TouchableOpacity
+                      style={styles.compactStopBtn}
+                      onPress={audio.stop}
+                      disabled={audio.state === 'ready' || audio.state === 'loading'}
+                    >
+                      <StopIcon size={12} color={Colors.textMid} />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.compactPlayBtn,
+                        audio.state === 'loading' && styles.compactPlayBtnDim,
+                      ]}
+                      onPress={audio.state === 'playing' ? audio.pause : audio.play}
+                      disabled={audio.state === 'loading'}
+                    >
+                      {audio.state === 'playing'
+                        ? <PauseIcon size={16} color={Colors.white} />
+                        : <PlayIcon  size={16} color={Colors.white} />
+                      }
+                    </TouchableOpacity>
+
+                    {/* Time display */}
+                    <Text style={styles.compactTime}>
+                      {formatTime(audio.position)}
+                      <Text style={styles.compactTimeSep}> / </Text>
+                      {audio.duration > 0 ? formatTime(audio.duration) : '--:--'}
+                    </Text>
+                  </View>
+
+                  {/* Progress bar */}
+                  <View style={styles.compactProgress}>
+                    <View style={[
+                      styles.compactProgressFill,
+                      {
+                        width: audio.duration > 0
+                          ? `${(audio.position / audio.duration) * 100}%` as any
+                          : '0%',
+                      },
+                    ]} />
+                  </View>
+                </View>
+              )}
             </>
           )}
 
@@ -502,6 +645,63 @@ const styles = StyleSheet.create({
     color: Colors.textLight, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 6,
   },
   detailDivider: { height: 1, backgroundColor: Colors.borderLight, marginVertical: 16 },
+
+  // ── Audio playback card ───────────────────────────────────────────────────
+  audioCard: {
+    backgroundColor: Colors.white, borderRadius: 12,
+    borderWidth: 1, borderColor: Colors.border, padding: 18, gap: 12,
+  },
+  audioHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  audioIconBox: {
+    width: 28, height: 28, borderRadius: 7,
+    backgroundColor: '#EBF9F9', alignItems: 'center', justifyContent: 'center',
+  },
+  audioLabel: {
+    fontFamily: 'IBMPlexMono-Regular', fontSize: 10, fontWeight: '400',
+    color: Colors.textLight, letterSpacing: 2, textTransform: 'uppercase', flex: 1,
+  },
+  audioPill: {
+    backgroundColor: Colors.bgWarm, borderRadius: 20,
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  audioPillText: {
+    fontFamily: 'IBMPlexSans-Regular', fontSize: 11, fontWeight: '400', color: Colors.textLight,
+  },
+  audioProgress: {
+    height: 4, backgroundColor: Colors.borderLight, borderRadius: 2, overflow: 'hidden',
+  },
+  audioProgressFill: {
+    height: 4, backgroundColor: Colors.teal, borderRadius: 2,
+  },
+  audioTimes: {
+    flexDirection: 'row', justifyContent: 'space-between',
+  },
+  audioTime: {
+    fontFamily: 'IBMPlexMono-Regular', fontSize: 11, fontWeight: '400', color: Colors.textLight,
+  },
+  audioControls: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 16,
+  },
+  audioStopBtn: {
+    width: 36, height: 36, borderRadius: 8,
+    backgroundColor: Colors.bgWarm, borderWidth: 1, borderColor: Colors.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  audioStopText: {
+    fontSize: 12, color: Colors.textMid,
+  },
+  audioPlayBtn: {
+    width: 52, height: 52, borderRadius: 26,
+    backgroundColor: Colors.teal,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: Colors.teal, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+  },
+  audioPlayBtnDim: { backgroundColor: Colors.border, shadowOpacity: 0, elevation: 0 },
+  audioError: {
+    fontFamily: 'IBMPlexSans-Regular', fontSize: 12, fontWeight: '400',
+    color: Colors.red, textAlign: 'center',
+  },
 
   exportBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 8,

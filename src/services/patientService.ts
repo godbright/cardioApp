@@ -59,6 +59,7 @@ export async function savePatient(
         rec.weightKg    = patient.weight ?? null;
         rec.bpSys       = patient.bpSys ?? null;
         rec.bpDia       = patient.bpDia ?? null;
+        rec.deletedAt   = null; // restore soft-deleted patient if study_code is reused
       });
     } else {
       await col.create(rec => {
@@ -96,9 +97,22 @@ export async function loadAllPatients(): Promise<Patient[]> {
   const capturesCol = database.get<CaptureRecord>('captures');
   const stage1Col   = database.get<Stage1ResultRecord>('stage1_results');
 
+  // Defensive: match both SQL NULL and 0 as "not deleted". Some WatermelonDB
+  // versions / Android builds store 0 instead of NULL for optional number
+  // columns, which would make the null-only filter return nothing.
   const patientRecords = await patientsCol
-    .query(Q.where('deleted_at', null))
+    .query(
+      Q.or(
+        Q.where('deleted_at', null),
+        Q.where('deleted_at', Q.lte(0)),
+      ),
+    )
     .fetch();
+
+  if (__DEV__) {
+    const total = await patientsCol.query().fetch();
+    console.log(`[PatientService] DB has ${total.length} total patients, ${patientRecords.length} active (not deleted).`);
+  }
 
   const patients: Patient[] = [];
 

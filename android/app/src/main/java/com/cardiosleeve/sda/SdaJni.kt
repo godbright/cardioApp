@@ -30,4 +30,8 @@ object SdaJni {
 
     // Flush ring buffers and zero all DSP state.
     external fun nativeReset()
+
+    // Compute log-mel spectrogram from a WAV file.
+    // Returns float[4032] in [mel][frame] row-major order, or null on error.
+    external fun nativeComputeMelSpec(wavPath: String): FloatArray?
 }

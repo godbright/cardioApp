@@ -50,6 +50,7 @@ export const VideoIcon    = (p: IconProps) => <D {...p}><Polygon points="23 7 16
 export const PlayIcon     = (p: IconProps) => <D {...p}><Polygon points="5 3 19 12 5 21 5 3" /></D>;
 export const MicIcon      = (p: IconProps) => <D {...p}><Rect x="9" y="2" width="6" height="11" rx="3" /><Path d="M19 10v2a7 7 0 0 1-14 0v-2" /><Line x1="12" y1="19" x2="12" y2="22" /><Line x1="8" y1="22" x2="16" y2="22" /></D>;
 export const StopIcon     = (p: IconProps) => <D {...p}><Rect x="3" y="3" width="18" height="18" rx="2" /></D>;
+export const PauseIcon    = (p: IconProps) => <D {...p}><Rect x="6" y="4" width="4" height="16" /><Rect x="14" y="4" width="4" height="16" /></D>;
 export const ClockIcon        = (p: IconProps) => <D {...p}><Circle cx="12" cy="12" r="10" /><Polyline points="12 6 12 12 16 14" /></D>;
 export const UserIcon         = (p: IconProps) => <D {...p}><Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><Circle cx="12" cy="7" r="4" /></D>;
 export const CheckCircleIcon  = (p: IconProps) => <D {...p}><Path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><Polyline points="22 4 12 14.01 9 11.01" /></D>;

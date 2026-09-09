@@ -3,7 +3,6 @@ package com.cardiosleeve.sda
 import android.util.Log
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
-import com.cardiosleeve.BuildConfig
 
 /**
  * Installs global.CardioSqaModule into the Hermes JSI runtime.
@@ -16,10 +15,6 @@ import com.cardiosleeve.BuildConfig
  */
 class SdaModule(private val ctx: ReactApplicationContext)
     : ReactContextBaseJavaModule(ctx) {
-
-    companion object {
-        private const val TAG = "SdaModule"
-    }
 
     override fun getName(): String = "CardioSdaInstaller"
 
@@ -40,12 +35,9 @@ class SdaModule(private val ctx: ReactApplicationContext)
             }
         }
 
-        // In debug builds, start feeding synthetic frames so the C++ pipeline
-        // can be validated end-to-end without real hardware.
-        // Remove once the Rijuven SDK is integrated.
-        if (BuildConfig.DEBUG) {
-            CardioSleeveService().startSyntheticStream()
-            Log.i(TAG, "Synthetic signal stream started for native SQI validation")
-        }
+    }
+
+    companion object {
+        private const val TAG = "SdaModule"
     }
 }

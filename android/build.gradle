@@ -6,6 +6,11 @@ buildscript {
         targetSdkVersion = 35
         ndkVersion = "27.1.12297006"
         kotlinVersion = "1.9.24"
+        // Tells react-native-svg (and other libs that use the same pattern)
+        // where react-native lives without spawning a `node` process during
+        // Gradle configuration.  Node via nvm is not in Gradle's PATH so the
+        // fallback exec("node …") fails.  rootDir is the android/ folder.
+        REACT_NATIVE_NODE_MODULES_DIR = new File(rootDir, "../node_modules/react-native")
     }
     repositories {
         google()

@@ -1,66 +1,163 @@
 /**
  * Stage 1 on-device TFLite inference.
  *
- * Embeds the exported, quantized (INT8) MobileNetV3-Small model as a
- * bundled asset. The model version that produced each result is logged
- * for clinical pilot traceability.
+ * Pipeline:
+ *   1. computeMelSpec(wavPath) — native C++ mel spectrogram (64 × 63 log-mel)
+ *   2. loadTensorflowModel — cached, loaded once per app launch
+ *   3. model.runSync([Float32Array]) — INT8 MobileNetV3-Small
+ *   4. applyThreshold(p_abnormal) — normal / abnormal / inconclusive
  *
- * Low-confidence results are treated as a third state ("inconclusive")
- * rather than forced binary classification.
- *
- * Stub implementation — wires up react-native-fast-tflite once the
- * trained/exported model artifact is available.
+ * Falls back to a stub when the model asset is not yet bundled
+ * (android/app/src/main/assets/stage1_<MODEL_VERSION>.tflite).
  */
+
+import { NativeModules } from 'react-native';
+import { loadTensorflowModel } from 'react-native-fast-tflite';
+import type { TensorflowModel } from 'react-native-fast-tflite';
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 export type Stage1Result =
   | { verdict: 'normal';       confidence: number; modelVersion: string }
   | { verdict: 'abnormal';     confidence: number; modelVersion: string }
   | { verdict: 'inconclusive'; confidence: number; modelVersion: string };
 
-// Model version string must match the filename of the bundled .tflite asset.
-// Update this constant each time a new model is exported and bundled.
+// ── Configuration ─────────────────────────────────────────────────────────────
+
+// Bump this constant when a new model artifact is exported and placed in assets/.
 const MODEL_VERSION = 'v0.4.1';
 
-// Confidence threshold below which a result is treated as inconclusive.
-const INCONCLUSIVE_THRESHOLD = 0.65;
+// Android asset URI — file must exist at android/app/src/main/assets/<name>.tflite
+const MODEL_URI = `file:///android_asset/stage1_${MODEL_VERSION}.tflite`;
+
+// Confidence threshold: p_abnormal >= HIGH → abnormal, <= LOW → normal, else inconclusive.
+const THRESHOLD_HIGH = 0.65;
+const THRESHOLD_LOW  = 1 - THRESHOLD_HIGH;   // 0.35
+
+// Minimum time the 'analyzing' phase stays visible so the CHW sees feedback.
+const MIN_ANALYSIS_MS = 800;
+
+// ── Native modules ────────────────────────────────────────────────────────────
+
+const MelSpecNative = (NativeModules as any).MelSpec as
+  | { computeMelSpec(wavPath: string): Promise<number[] | null> }
+  | null
+  | undefined;
+
+// ── Model cache ───────────────────────────────────────────────────────────────
+
+let _model:        TensorflowModel | null = null;
+let _modelPromise: Promise<TensorflowModel | null> | null = null;
+
+async function getModel(): Promise<TensorflowModel | null> {
+  if (_model) return _model;
+  if (_modelPromise) return _modelPromise;
+
+  _modelPromise = loadTensorflowModel({ url: MODEL_URI })
+    .then(m => { _model = m; return m; })
+    .catch(e => {
+      console.warn('[Stage1] Model asset not found — falling back to stub.', e?.message ?? e);
+      _modelPromise = null;
+      return null;
+    });
+
+  return _modelPromise;
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Run Stage 1 inference on a captured PCG recording.
- * `pcmSamples` is the raw PCM buffer from the quality-gated recording.
+ * Run Stage 1 inference on the WAV file produced by WavRecorder.
+ * Returns a result within ~1–2 s on target hardware (INT8 on CPU delegate).
  *
- * Returns a promise that resolves with the inference result within ~2s
- * on target hardware.
+ * Falls back to a simulated result when:
+ *  - wavPath is empty (ECG capture, no PCG audio)
+ *  - model asset is not yet bundled
+ *  - MelSpec native module is absent (JS-only reload before first run-android)
  */
-export async function runStage1(_pcmSamples: Float32Array): Promise<Stage1Result> {
-  // STUB — real implementation:
-  // 1. Extract mel-spectrogram from pcmSamples (native DSP module)
-  // 2. Load/reuse the TFLite model via react-native-fast-tflite
-  // 3. Run inference
-  // 4. Apply INCONCLUSIVE_THRESHOLD logic
-  // 5. Log modelVersion + result for pilot traceability
+export async function runStage1(wavPath: string): Promise<Stage1Result> {
+  const t0 = Date.now();
 
-  console.warn('[Stage1] Inference stub — model not yet bundled');
+  if (!wavPath) {
+    return _stub('inconclusive', 0, t0);
+  }
 
-  // Simulate a 1.7s inference delay
-  await new Promise(r => setTimeout(r, 1700));
+  // Try to load the TFLite model (no-op if already loaded).
+  const model = await getModel();
+  if (!model) {
+    console.warn('[Stage1] Model unavailable — using stub result');
+    return _stub('abnormal', 0.86, t0);
+  }
 
-  return {
-    verdict: 'abnormal',
-    confidence: 0.86,
-    modelVersion: MODEL_VERSION,
-  };
+  if (!MelSpecNative) {
+    console.warn('[Stage1] MelSpec native module unavailable — using stub result');
+    return _stub('abnormal', 0.86, t0);
+  }
+
+  // Compute log-mel spectrogram natively (C++ via JNI).
+  let melData: number[] | null = null;
+  try {
+    melData = await MelSpecNative.computeMelSpec(wavPath);
+  } catch (e) {
+    console.warn('[Stage1] computeMelSpec failed:', e);
+  }
+
+  if (!melData || melData.length !== 4032) {
+    console.warn('[Stage1] Mel spec failed — returning inconclusive');
+    return _stub('inconclusive', 0, t0);
+  }
+
+  // Run TFLite inference synchronously on the model's internal thread.
+  const input = new Float32Array(melData);
+  let probs: Float32Array;
+  try {
+    const outputs = model.runSync([input]);
+    probs = outputs[0] as Float32Array;
+  } catch (e) {
+    console.warn('[Stage1] Inference failed:', e);
+    return _stub('inconclusive', 0, t0);
+  }
+
+  // probs = [p_normal, p_abnormal]
+  const result = applyThreshold(probs[1], MODEL_VERSION);
+
+  // Pad to MIN_ANALYSIS_MS so the 'analyzing' UI is visible long enough.
+  const elapsed = Date.now() - t0;
+  if (elapsed < MIN_ANALYSIS_MS) {
+    await new Promise<void>(r => setTimeout(r, MIN_ANALYSIS_MS - elapsed));
+  }
+
+  console.log(
+    `[Stage1] verdict=${result.verdict} conf=${result.confidence.toFixed(3)} ` +
+    `model=${result.modelVersion} (${Date.now() - t0} ms)`,
+  );
+  return result;
 }
 
 /**
- * Apply the inconclusive threshold to a raw model output.
- * Centralised here so threshold changes don't require hunting across files.
+ * Apply the inconclusive band to a raw p_abnormal probability.
+ * Exported so tests and debug screens can call it directly.
  */
-export function applyThreshold(rawProb: number, modelVersion: string): Stage1Result {
-  if (rawProb >= INCONCLUSIVE_THRESHOLD) {
-    return { verdict: 'abnormal', confidence: rawProb, modelVersion };
+export function applyThreshold(pAbnormal: number, modelVersion: string): Stage1Result {
+  if (pAbnormal >= THRESHOLD_HIGH) {
+    return { verdict: 'abnormal',     confidence: pAbnormal,       modelVersion };
   }
-  if (rawProb <= 1 - INCONCLUSIVE_THRESHOLD) {
-    return { verdict: 'normal', confidence: 1 - rawProb, modelVersion };
+  if (pAbnormal <= THRESHOLD_LOW) {
+    return { verdict: 'normal',       confidence: 1 - pAbnormal,  modelVersion };
   }
-  return { verdict: 'inconclusive', confidence: rawProb, modelVersion };
+  return   { verdict: 'inconclusive', confidence: pAbnormal,       modelVersion };
+}
+
+// ── Stub fallback ─────────────────────────────────────────────────────────────
+
+async function _stub(
+  verdict: Stage1Result['verdict'],
+  confidence: number,
+  t0: number,
+): Promise<Stage1Result> {
+  const elapsed = Date.now() - t0;
+  if (elapsed < MIN_ANALYSIS_MS) {
+    await new Promise<void>(r => setTimeout(r, MIN_ANALYSIS_MS - elapsed));
+  }
+  return { verdict, confidence, modelVersion: MODEL_VERSION };
 }

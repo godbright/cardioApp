@@ -4,6 +4,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import android.util.Log
+import com.cardiosleeve.audio.WavRecorder
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -60,6 +61,8 @@ class CardioSleeveService : Service() {
      */
     fun onSamples(pcm: FloatArray, ecg: FloatArray, rateHz: Int) {
         SdaJni.nativePushSamples(pcm, pcm.size, ecg, ecg.size, rateHz)
+        // Feed PCM into the WAV recorder; no-ops when not recording.
+        WavRecorder.feed(pcm, rateHz)
     }
 
     // ── Stub helpers for development / demo testing ───────────────────────────

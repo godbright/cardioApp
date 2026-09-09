@@ -48,6 +48,16 @@ public:
         return h - t;
     }
 
+    // Consumer-side flush: advance tail to the current head, discarding all
+    // buffered samples. Safe to call from the consumer (worker) thread only —
+    // do NOT call from the producer thread or any other thread while push() may
+    // be running concurrently (that is what reset() was incorrectly used for).
+    void drain() noexcept {
+        tail_.store(head_.load(std::memory_order_acquire), std::memory_order_release);
+    }
+
+    // UNSAFE — only safe when no concurrent push() or pop() is in flight.
+    // Kept for completeness; callers that need a safe flush must use drain().
     void reset() noexcept {
         head_.store(0, std::memory_order_relaxed);
         tail_.store(0, std::memory_order_relaxed);
