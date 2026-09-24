@@ -8,7 +8,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, LayoutChangeEvent } from 'react-native';
-import Svg, { Polyline, Line, G } from 'react-native-svg';
+import Svg, { Polyline, Line, G, Path, Defs, LinearGradient, Stop } from 'react-native-svg';
 
 export interface WaveformStream {
   label: string;
@@ -82,20 +82,45 @@ interface StaticTraceProps {
 
 export function StaticTrace({ samples, color, height = 120 }: StaticTraceProps) {
   const n = samples.length;
-  const W = 1000;
+  if (n < 2) return null;
+  const W   = 1000;
   const mid = height / 2;
-  const amp = height * 0.38;
-  const points = samples
+  const amp = height * 0.42;
+
+  // Build SVG polyline points for the stroke.
+  const pts = samples
     .map((v, i) => `${((i / (n - 1)) * W).toFixed(1)},${(mid - v * amp).toFixed(1)}`)
     .join(' ');
 
+  // Build a closed filled area path: trace the waveform then return along the
+  // centre line so the fill shows the displacement from zero on both sides.
+  const firstX = '0';
+  const lastX  = W.toFixed(1);
+  const fillD  = `M ${firstX},${mid} ` +
+    samples.map((v, i) =>
+      `L ${((i / (n - 1)) * W).toFixed(1)},${(mid - v * amp).toFixed(1)}`
+    ).join(' ') +
+    ` L ${lastX},${mid} Z`;
+
+  const gradId = 'wfGrad';
+
   return (
     <Svg width="100%" height={height} viewBox={`0 0 ${W} ${height}`} preserveAspectRatio="none">
+      <Defs>
+        <LinearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0"   stopColor={color} stopOpacity={0.28} />
+          <Stop offset="0.5" stopColor={color} stopOpacity={0.10} />
+          <Stop offset="1"   stopColor={color} stopOpacity={0.28} />
+        </LinearGradient>
+      </Defs>
+      {/* Filled area */}
+      <Path d={fillD} fill={`url(#${gradId})`} />
+      {/* Stroke on top */}
       <Polyline
-        points={points}
+        points={pts}
         fill="none"
         stroke={color}
-        strokeWidth={1.6}
+        strokeWidth={1.8}
         strokeLinejoin="round"
         strokeLinecap="round"
         vectorEffect="non-scaling-stroke"

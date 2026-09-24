@@ -21,7 +21,7 @@ import { AppProvider, useApp } from './context/AppContext';
 import RootNavigator from './navigation/RootNavigator';
 import { BluetoothService } from './services/btAdapter';
 import { pushBatch as signalBusPushBatch, flush as signalBusFlush } from './services/signalBus';
-import { getNativeSda } from './native/NativeSda';
+import { getNativeSda, pushBatch as sqaPushBatch } from './native/NativeSda';
 import { startSyncWorker, getPendingCount, getFailedCount } from './services/syncQueue';
 import { DEMO_MODE } from './demo';
 
@@ -29,7 +29,6 @@ if (DEMO_MODE) {
   LogBox.ignoreAllLogs();
 }
 import RNFS from 'react-native-fs';
-import { SHA256 } from 'crypto-js';
 import { consumePendingCaptureId, setLastSavedPath } from './services/recordingStore';
 import { updateRecordingPath, findUnpatchedCapture } from './services/captureService';
 import { ensurePlayableWav } from './utils/wavUtils';
@@ -151,21 +150,20 @@ function AppInner() {
           const header4 = wav.length >= 4 ? wav.toString('ascii', 0, 4) : '??';
           console.log(`[App] WAV header check: first4="${header4}" (${header4 === 'RIFF' ? 'valid WAV' : 'raw PCM — will wrap'})`);
 
-          // 1. Original WAV — for Stage 2 upload and SHA-256 integrity.
-          //    If the peripheral sent raw PCM (no RIFF header) wrap it now so
-          //    Stage 2 receives a proper .wav file rather than naked samples.
-          const origPath = `${dir}/${recordingId}.wav`;
-          await RNFS.writeFile(origPath, wav.toString('base64'), 'base64');
-          const sha256 = SHA256(wav.toString('binary')).toString();
-
-          // 2. Playback WAV — ensurePlayableWav handles both raw PCM (wraps a
-          //    RIFF header first) and existing WAV files (upsamples if < 4 kHz).
-          //    Android MediaPlayer minimum AudioTrack rate is 4000 Hz.
+          // 1. Playback WAV — ensurePlayableWav wraps raw PCM if needed and
+          //    upsamples to 8 kHz so Android MediaPlayer and browser audio players
+          //    can both open the file. This is the file uploaded to Stage 2 so the
+          //    cardiologist can play it back in the dashboard.
           const playWav  = ensurePlayableWav(wav, 2000, 16, 1);
           const playPath = `${dir}/${recordingId}_play.wav`;
           await RNFS.writeFile(playPath, playWav.toString('base64'), 'base64');
 
-          // 3. Patch the DB capture record with the original path + hash.
+          // Hash the file after writing so the SHA-256 matches the exact bytes the
+          // backend receives. Computing the hash from the in-memory Buffer string
+          // via CryptoJS mishandles bytes > 0x7F (UTF-8 multi-byte expansion).
+          const sha256 = await RNFS.hash(playPath, 'sha256');
+
+          // 2. Patch the DB capture record with the playable WAV path + hash.
           // Primary: captureId stored by _commitResult when Stage 1 result was saved.
           // Fallback: if the BLE transfer completed before _commitResult resolved,
           // the slot is empty — query the DB for the most recent PCG capture with
@@ -175,12 +173,12 @@ function AppInner() {
             captureId = await findUnpatchedCapture().catch(() => '');
             if (captureId) console.log(`[App] captureId resolved via DB fallback: ${captureId}`);
           }
-          await updateRecordingPath(captureId, origPath, sha256);
+          await updateRecordingPath(captureId, playPath, sha256);
 
-          // 4. Notify ResultScreen — point at the playback copy.
+          // 3. Notify ResultScreen — already pointing at the playback copy.
           setLastSavedPath(playPath);
 
-          console.log(`[App] WAV saved → ${origPath} | play → ${playPath} (sha256: ${sha256.slice(0, 12)}…, captureId: ${captureId || '(none)'})`);
+          console.log(`[App] WAV saved → play=${playPath} (sha256: ${sha256.slice(0, 12)}…, captureId: ${captureId || '(none)'})`);
         } catch (err) {
           console.error('[App] Failed to save WAV:', err);
         }
@@ -191,11 +189,9 @@ function AppInner() {
       // of one callback per sample. This drops JS-thread work from ~15 000 calls/s to
       // ~60 calls/s, keeping the thread free for touch events and React renders.
       BluetoothService.onData((pcm, ecg, count, rateHz) => {
-        // One pushBatch call writes all chunk samples into the SignalBus ring buffer.
+        // Feed waveform display (SignalBus) and SQI engine (native C++ ring buffer).
         signalBusPushBatch(pcm, ecg, count);
-
-        // SDA/SQI engine is fed exclusively from the JNI audio callback thread —
-        // calling pushSamples from JS (a second producer) violated the SPSC contract.
+        sqaPushBatch(pcm, ecg, count, rateHz);
       });
 
       BluetoothService.autoConnect();

@@ -103,7 +103,7 @@ export default function CaptureScreen() {
 
       let prog = 0;
       phaseTimer.current = setInterval(() => {
-        prog = Math.min(100, prog + 2.5);
+        prog = Math.min(100, prog + 1);
         // Only advance the progress bar — quality stays at whatever it was when
         // recording started (SQI is inactive during recording).
         dispatch({ type: 'PATCH', patch: { recProgress: prog } });
@@ -690,9 +690,9 @@ const styles = StyleSheet.create({
   recProgress: { height: 6, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' },
   recProgressFill: { height: 6, backgroundColor: Colors.red, borderRadius: 3 },
   recordBtnCircle: {
-    width: 92, height: 92, borderRadius: 46, backgroundColor: Colors.white,
+    width: 70, height: 70, borderRadius: 46, backgroundColor: Colors.white,
     alignSelf: 'center', alignItems: 'center', justifyContent: 'center',
-    shadowColor: Colors.white, shadowOpacity: 0.18, shadowRadius: 20, elevation: 6,
+    shadowColor: Colors.white, shadowOpacity: 0.18, shadowRadius: 20,
   },
   recordBtnCircleDim: { backgroundColor: 'rgba(255,255,255,0.10)' },
   recordBtnRecording: {

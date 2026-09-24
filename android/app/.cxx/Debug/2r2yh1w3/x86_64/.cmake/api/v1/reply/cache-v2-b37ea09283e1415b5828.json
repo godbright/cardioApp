@@ -11,7 +11,7 @@
 				}
 			],
 			"type" : "UNINITIALIZED",
-			"value" : "x86"
+			"value" : "x86_64"
 		},
 		{
 			"name" : "ANDROID_NDK",
@@ -75,7 +75,7 @@
 				}
 			],
 			"type" : "UNINITIALIZED",
-			"value" : "x86"
+			"value" : "x86_64"
 		},
 		{
 			"name" : "CMAKE_ANDROID_NDK",
@@ -163,7 +163,7 @@
 				}
 			],
 			"type" : "INTERNAL",
-			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/x86"
+			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/x86_64"
 		},
 		{
 			"name" : "CMAKE_CACHE_MAJOR_VERSION",
@@ -555,7 +555,7 @@
 				}
 			],
 			"type" : "UNINITIALIZED",
-			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/prefab/x86/prefab"
+			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/prefab/x86_64/prefab"
 		},
 		{
 			"name" : "CMAKE_GENERATOR",
@@ -651,7 +651,7 @@
 				}
 			],
 			"type" : "UNINITIALIZED",
-			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/build/intermediates/cxx/Debug/2r2yh1w3/obj/x86"
+			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/build/intermediates/cxx/Debug/2r2yh1w3/obj/x86_64"
 		},
 		{
 			"name" : "CMAKE_LINKER",
@@ -923,7 +923,7 @@
 				}
 			],
 			"type" : "UNINITIALIZED",
-			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/build/intermediates/cxx/Debug/2r2yh1w3/obj/x86"
+			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/build/intermediates/cxx/Debug/2r2yh1w3/obj/x86_64"
 		},
 		{
 			"name" : "CMAKE_SHARED_LINKER_FLAGS",
@@ -1163,10 +1163,10 @@
 			[
 				{
 					"name" : "HELPSTRING",
-					"value" : "The CMake toolchain file"
+					"value" : "No help, variable specified on the command line."
 				}
 			],
-			"type" : "FILEPATH",
+			"type" : "UNINITIALIZED",
 			"value" : "/Users/brightsmac/Library/Android/sdk/ndk/27.1.12297006/build/cmake/android.toolchain.cmake"
 		},
 		{
@@ -1207,7 +1207,7 @@
 				}
 			],
 			"type" : "STATIC",
-			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/x86"
+			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/x86_64"
 		},
 		{
 			"name" : "CardioSda_IS_TOP_LEVEL",
@@ -1243,7 +1243,7 @@
 				}
 			],
 			"type" : "PATH",
-			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/prefab/x86/prefab/lib/i686-linux-android/cmake/ReactAndroid"
+			"value" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/prefab/x86_64/prefab/lib/x86_64-linux-android/cmake/ReactAndroid"
 		},
 		{
 			"name" : "android_lib",
@@ -1255,7 +1255,7 @@
 				}
 			],
 			"type" : "FILEPATH",
-			"value" : "/Users/brightsmac/Library/Android/sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/i686-linux-android/24/libandroid.so"
+			"value" : "/Users/brightsmac/Library/Android/sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/x86_64-linux-android/24/libandroid.so"
 		},
 		{
 			"name" : "log_lib",
@@ -1267,7 +1267,7 @@
 				}
 			],
 			"type" : "FILEPATH",
-			"value" : "/Users/brightsmac/Library/Android/sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/i686-linux-android/24/liblog.so"
+			"value" : "/Users/brightsmac/Library/Android/sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/x86_64-linux-android/24/liblog.so"
 		}
 	],
 	"kind" : "cache",

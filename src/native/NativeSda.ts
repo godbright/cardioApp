@@ -1,6 +1,8 @@
 // Types for the CardioSqaModule JSI host object installed by SdaJSIPackage.
 // The object lives on `global.CardioSqaModule` and is available synchronously —
 // no bridge serialization, no async overhead.
+import { NativeModules } from 'react-native';
+import { Buffer } from 'buffer';
 
 export interface SqaPayload {
   /** True when overall_score >= mode-specific threshold (0.65 for PCG/DUAL, 0.60 for ECG). */
@@ -42,4 +44,15 @@ export interface NativeSdaModule {
 // undefined. Call this function inside effects, never at module evaluation time.
 export function getNativeSda(): NativeSdaModule | undefined {
   return (global as any).CardioSqaModule as NativeSdaModule | undefined;
+}
+
+/**
+ * Forward a PCM chunk from the BLE data callback into the C++ SQI engine.
+ * Encodes the Float32Array as base64 to avoid per-sample boxing through the bridge.
+ * Called at ~60 Hz from App.tsx whenever the BLE service delivers a new chunk.
+ */
+export function pushBatch(pcm: Float32Array, _ecg: Float32Array, count: number, rateHz: number): void {
+  if (count <= 0) return;
+  const pcmBase64 = Buffer.from(pcm.buffer as ArrayBuffer, pcm.byteOffset, count * 4).toString('base64');
+  NativeModules.CardioSdaInstaller?.pushBatch(pcmBase64, count, rateHz);
 }

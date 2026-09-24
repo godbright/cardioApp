@@ -232,10 +232,8 @@ export async function getCaptureForSite(
   if (captures.length === 0) return { ...EMPTY_SITE_CAPTURE };
   const cap = captures[0];
 
-  // Derive the playback (_play.wav) path from the stored original path.
-  const playbackPath = cap.recordingPath
-    ? cap.recordingPath.replace(/\.wav$/, '_play.wav')
-    : null;
+  // recordingPath already points to the playable WAV (_play.wav) written by App.tsx.
+  const playbackPath = cap.recordingPath || null;
 
   const s1s = await database
     .get<Stage1ResultRecord>('stage1_results')

@@ -7,8 +7,9 @@ import { useApp } from '../context/AppContext';
 import Header from '../components/Header';
 import {
   SearchIcon, FilterIcon, PlusIcon, ChevronDown,
-  ChevronRight, CheckIcon, XIcon, DownloadIcon, GridIcon,
+  ChevronRight, CheckIcon, XIcon, DownloadIcon, GridIcon, FileTextIcon,
 } from '../components/Icons';
+import PatientSummaryModal from '../components/PatientSummaryModal';
 import { Colors } from '../theme/colors';
 import { useOrientation } from '../hooks/useOrientation';
 import { useStrings } from '../i18n/useStrings';
@@ -55,9 +56,10 @@ export default function HistoryScreen() {
   const { isPortrait } = useOrientation();
   const S = useStrings();
 
-  const [search, setSearch]         = useState('');
-  const [filterOpen, setFilterOpen] = useState(false);
-  const [exportOpen, setExportOpen] = useState(false);
+  const [search, setSearch]               = useState('');
+  const [filterOpen, setFilterOpen]       = useState(false);
+  const [exportOpen, setExportOpen]       = useState(false);
+  const [summaryPatient, setSummaryPatient] = useState<Patient | null>(null);
 
   // Count for the "Awaiting sync" badge
   const awaitingCount = useMemo(
@@ -285,6 +287,16 @@ export default function HistoryScreen() {
                   </View>
                 )}
 
+                <TouchableOpacity
+                  style={styles.colSummary}
+                  onPress={e => { e.stopPropagation?.(); setSummaryPatient(p); }}
+                  hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+                >
+                  <View style={styles.summaryIconBox}>
+                    <FileTextIcon size={14} color={Colors.navy} />
+                  </View>
+                </TouchableOpacity>
+
                 <View style={styles.colChevron}>
                   <ChevronRight size={16} color={Colors.textLight} />
                 </View>
@@ -315,6 +327,12 @@ export default function HistoryScreen() {
           </View>
         </View>
       </View>
+
+      <PatientSummaryModal
+        visible={summaryPatient !== null}
+        patient={summaryPatient}
+        onClose={() => setSummaryPatient(null)}
+      />
     </View>
   );
 }
@@ -451,7 +469,13 @@ const styles = StyleSheet.create({
   colExam:       { flex: 1,   paddingRight: 12 },
   colHs:         { flex: 1.8, paddingRight: 12 },
   colHr:         { flex: 1.4, paddingRight: 12 },
-  colChevron: { width: 44, alignItems: 'center' },
+  colSummary: { width: 44, alignItems: 'center', justifyContent: 'center' },
+  summaryIconBox: {
+    width: 30, height: 30, borderRadius: 8,
+    backgroundColor: Colors.navy + '12',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  colChevron: { width: 36, alignItems: 'center' },
   patName: { fontSize: 14, fontFamily: 'IBMPlexSans-Regular', fontWeight: '700', color: Colors.textDark },
   patMeta: { fontSize: 12, color: Colors.textLight, marginTop: 3 },
   emptyRow: { padding: 40, alignItems: 'center' },

@@ -6,79 +6,142 @@ Sound.setCategory('Playback');
 export type PlaybackState = 'idle' | 'loading' | 'ready' | 'playing' | 'paused' | 'error';
 
 export function useAudioPlayer(filePath: string | null) {
-  const soundRef               = useRef<Sound | null>(null);
-  const [state, setState]      = useState<PlaybackState>('idle');
-  const [position, setPosition] = useState(0); // seconds elapsed
-  const [duration, setDuration] = useState(0); // seconds total
-  const progressTimer          = useRef<ReturnType<typeof setInterval> | null>(null);
+  const soundRef      = useRef<Sound | null>(null);
+  const mountedRef    = useRef(true);
+  const generationRef = useRef(0);
+  const progressTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Load the file whenever filePath changes.
+  const [state,    setState]    = useState<PlaybackState>('idle');
+  const [position, setPosition] = useState(0);
+  const [duration, setDuration] = useState(0);
+
   useEffect(() => {
-    if (!filePath) { setState('idle'); return; }
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const clearTimer = useCallback(() => {
+    if (progressTimer.current !== null) {
+      clearInterval(progressTimer.current);
+      progressTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const gen = ++generationRef.current;
+
+    // Track whether this Sound instance finished loading.
+    // Calling stop() on Android's MediaPlayer while it is still in PREPARING
+    // state throws IllegalStateException on the Java side — the source of the
+    // Double.doubleValue() NPE. We only call stop() when the Sound is loaded.
+    let loaded = false;
+
+    if (!filePath) {
+      clearTimer();
+      if (soundRef.current) {
+        const old = soundRef.current;
+        soundRef.current = null;
+        try { old.stop(); } catch (_) {}
+        try { old.release(); } catch (_) {}
+      }
+      setState('idle');
+      setPosition(0);
+      setDuration(0);
+      return () => { generationRef.current++; };
+    }
 
     setState('loading');
-    soundRef.current?.release();
-    soundRef.current = null;
 
-    // MAIN_BUNDLE = '' means the path is absolute (device storage).
+    if (soundRef.current) {
+      clearTimer();
+      const old = soundRef.current;
+      soundRef.current = null;
+      // old was necessarily loaded (it was in soundRef), safe to stop
+      try { old.stop(); } catch (_) {}
+      try { old.release(); } catch (_) {}
+    }
+
     const s = new Sound(filePath, '', err => {
+      if (generationRef.current !== gen) {
+        // Superseded — release without stop (still in PREPARING on Java side)
+        try { s.release(); } catch (_) {}
+        return;
+      }
       if (err) {
-        console.warn('[AudioPlayer] load error:', err);
         setState('error');
         return;
       }
+      loaded = true;
       soundRef.current = s;
-      setDuration(s.getDuration());
+      try { setDuration(s.getDuration()); } catch (_) { setDuration(0); }
       setPosition(0);
       setState('ready');
     });
 
     return () => {
-      clearInterval(progressTimer.current ?? undefined);
-      s.release();
-      soundRef.current = null;
+      generationRef.current++;
+      clearTimer();
+      if (soundRef.current === s) soundRef.current = null;
+      // Only call stop() if the Sound finished loading — stop() on a
+      // MediaPlayer still in PREPARING state crashes the Android bridge.
+      if (loaded) {
+        try { s.stop(); } catch (_) {}
+      }
+      try { s.release(); } catch (_) {}
     };
-  }, [filePath]);
+  }, [filePath]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const startProgressTimer = useCallback(() => {
-    clearInterval(progressTimer.current ?? undefined);
+  const startProgressTimer = useCallback((gen: number) => {
+    clearTimer();
     progressTimer.current = setInterval(() => {
-      soundRef.current?.getCurrentTime(sec => setPosition(sec));
+      const s = soundRef.current;
+      if (!s || !mountedRef.current || generationRef.current !== gen) {
+        clearTimer();
+        return;
+      }
+      try {
+        s.getCurrentTime(sec => {
+          if (!mountedRef.current || generationRef.current !== gen) return;
+          setPosition(sec ?? 0);
+        });
+      } catch (_) {
+        clearTimer();
+      }
     }, 250);
-  }, []);
+  }, [clearTimer]);
 
   const play = useCallback(() => {
     const s = soundRef.current;
     if (!s) return;
+    const gen = generationRef.current;
     s.play(success => {
-      clearInterval(progressTimer.current ?? undefined);
-      if (success) {
-        setPosition(0);
-        setState('ready');
-      } else {
-        setState('error');
-      }
+      clearTimer();
+      if (!mountedRef.current || generationRef.current !== gen || soundRef.current !== s) return;
+      setPosition(0);
+      setState(success ? 'ready' : 'error');
     });
     setState('playing');
-    startProgressTimer();
-  }, [startProgressTimer]);
+    startProgressTimer(gen);
+  }, [clearTimer, startProgressTimer]);
 
   const pause = useCallback(() => {
-    soundRef.current?.pause();
-    clearInterval(progressTimer.current ?? undefined);
-    setState('paused');
-  }, []);
+    try { soundRef.current?.pause(); } catch (_) {}
+    clearTimer();
+    if (mountedRef.current) setState('paused');
+  }, [clearTimer]);
 
   const stop = useCallback(() => {
-    soundRef.current?.stop();
-    clearInterval(progressTimer.current ?? undefined);
-    setPosition(0);
-    setState('ready');
-  }, []);
+    try { soundRef.current?.stop(); } catch (_) {}
+    clearTimer();
+    if (mountedRef.current) {
+      setPosition(0);
+      setState('ready');
+    }
+  }, [clearTimer]);
 
   const seek = useCallback((seconds: number) => {
-    soundRef.current?.setCurrentTime(seconds);
-    setPosition(seconds);
+    try { soundRef.current?.setCurrentTime(seconds); } catch (_) {}
+    if (mountedRef.current) setPosition(seconds);
   }, []);
 
   return { state, position, duration, play, pause, stop, seek };

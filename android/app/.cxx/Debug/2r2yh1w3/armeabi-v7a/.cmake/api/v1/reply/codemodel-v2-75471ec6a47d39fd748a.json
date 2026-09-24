@@ -39,7 +39,7 @@
 				{
 					"directoryIndex" : 0,
 					"id" : "CardioSda::@6890427a1f51a3e7e1df",
-					"jsonFile" : "target-CardioSda-Debug-d511f35b49f3b47cf6db.json",
+					"jsonFile" : "target-CardioSda-Debug-58e5e2d4b8912bb9092e.json",
 					"name" : "CardioSda",
 					"projectIndex" : 0
 				}
@@ -49,7 +49,7 @@
 	"kind" : "codemodel",
 	"paths" : 
 	{
-		"build" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/x86_64",
+		"build" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/.cxx/Debug/2r2yh1w3/armeabi-v7a",
 		"source" : "/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/src/main/cpp"
 	},
 	"version" : 

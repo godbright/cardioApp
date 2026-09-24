@@ -1,12 +1,13 @@
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Modal,
 } from 'react-native';
+import PatientSummaryModal from '../components/PatientSummaryModal';
 import { useApp } from '../context/AppContext';
 import Header from '../components/Header';
 import {
   HeartIcon, ActivityIcon, EditIcon, AlertTriangleIcon,
-  CheckIcon, DownloadIcon, ClockIcon,
+  CheckIcon, DownloadIcon, ClockIcon, FileTextIcon,
 } from '../components/Icons';
 import { Colors } from '../theme/colors';
 import { useOrientation } from '../hooks/useOrientation';
@@ -50,6 +51,46 @@ export default function SessionHubScreen() {
   const S = useStrings();
 
   if (!p) return null;
+
+  // ── Export helpers ─────────────────────────────────────────────────────────
+  const [summaryVisible, setSummaryVisible] = useState(false);
+
+  const shareCsv = useCallback(async () => {
+    const headers = [
+      'study_code','name','age','sex','rhd',
+      'height_cm','weight_kg','bp_systolic','bp_diastolic',
+      'hs_result','hs_site','hs_posture','hs_confidence','hs_model',
+      'hr_result','hr_lead','hr_posture',
+      'last_exam','export_timestamp',
+    ];
+
+    const escape = (v: string | number | null | undefined) => {
+      const s = v == null ? '' : String(v);
+      return s.includes(',') || s.includes('"') || s.includes('\n')
+        ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    const row = [
+      p.id, p.name, p.age, sexLabel(p.sex || ''),
+      p.rhd === 'yes' ? 'yes' : p.rhd === 'no' ? 'no' : '',
+      p.height ?? '', p.weight ?? '', p.bpSys ?? '', p.bpDia ?? '',
+      p.hs, p.hsSite ?? '', p.hsPosture ?? '',
+      p.hsConfidence ? (parseFloat(p.hsConfidence) * 100).toFixed(0) : '',
+      p.hsModel ?? '',
+      p.hr, p.hrLead ?? '', p.hrPosture ?? '',
+      p.lastExam, new Date().toISOString(),
+    ].map(escape).join(',');
+
+    const csv = [headers.join(','), row].join('\n');
+    const path = `${RNFS.CachesDirectoryPath}/patient_${p.id}_${Date.now()}.csv`;
+
+    try {
+      await RNFS.writeFile(path, csv, 'utf8');
+      await Share.share({ url: `file://${path}`, title: `Patient ${p.id} — Data` });
+    } catch {
+      Alert.alert('Export failed', 'Could not write or share the CSV file.');
+    }
+  }, [p]);
 
   const hsComplete    = p.hs !== 'none';
   const hrComplete    = p.hr !== 'none';
@@ -128,11 +169,11 @@ export default function SessionHubScreen() {
         <Text style={styles.extractTitle}>{S.session.extractRecord}</Text>
         <Text style={styles.extractNote}>{S.session.extractNote}</Text>
         <View style={styles.extractBtns}>
-          <TouchableOpacity style={styles.extractBtn}>
-            <DownloadIcon size={13} color={Colors.textMid} />
-            <Text style={styles.extractBtnText}>{S.session.extractSummary}</Text>
+          <TouchableOpacity style={styles.extractBtn} onPress={() => setSummaryVisible(true)}>
+            <FileTextIcon size={13} color={Colors.navy} />
+            <Text style={[styles.extractBtnText, { color: Colors.navy }]}>View Summary</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.extractBtn}>
+          <TouchableOpacity style={styles.extractBtn} onPress={shareCsv}>
             <DownloadIcon size={13} color={Colors.textMid} />
             <Text style={styles.extractBtnText}>{S.session.extractCsv}</Text>
           </TouchableOpacity>
@@ -206,6 +247,12 @@ export default function SessionHubScreen() {
           </View>
         )}
       </ScrollView>
+
+      <PatientSummaryModal
+        visible={summaryVisible}
+        patient={p}
+        onClose={() => setSummaryVisible(false)}
+      />
 
       <Modal visible={confirmDelete} transparent animationType="fade">
         <View style={styles.modalOverlay}>

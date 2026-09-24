@@ -25,6 +25,7 @@ import Stage2ResultRecord from '../db/models/Stage2ResultRecord';
 import {
   submitCapture,
   getJobResult,
+  Stage2ApiError,
   Stage2NotConfiguredError,
   type S2Verdict,
   type SubmitCaptureResponse,
@@ -64,6 +65,34 @@ export function startSyncWorker(): void {
 /** Trigger an immediate flush without waiting for the next poll cycle. */
 export function triggerFlush(): void {
   if (!_flushing) _flush();
+}
+
+/**
+ * Manual sync — resets backoff timers on pending rows and revives failed rows
+ * so they are eligible for the next flush regardless of retry schedule.
+ * Use this for explicit user-initiated sync (e.g. "Sync Now" button).
+ */
+export async function forceFlush(): Promise<void> {
+  const collection = database.get<SyncQueueRecord>('sync_queue');
+
+  const [pending, failed] = await Promise.all([
+    collection.query(Q.where('status', 'pending')).fetch(),
+    collection.query(Q.where('status', 'failed')).fetch(),
+  ]);
+
+  const toReset = [...pending, ...failed];
+  if (toReset.length > 0) {
+    await database.write(async () => {
+      for (const row of toReset) {
+        await row.update(r => {
+          r.status      = 'pending';
+          r.nextRetryAt = null;   // clear backoff — eligible immediately
+        });
+      }
+    });
+  }
+
+  _flush();
 }
 
 /** Count of recordings waiting for Stage 2 confirmation. */
@@ -148,9 +177,13 @@ async function _processRow(row: SyncQueueRecord): Promise<void> {
     // async arrow function (database.write callback). Extract everything needed
     // from err before any closure boundary.
     const isConfigError = err instanceof Stage2NotConfiguredError;
+    // 4xx errors (except 401/429) indicate a permanently bad payload — no point retrying.
+    const isPermanent   = err instanceof Stage2ApiError
+      && err.status >= 400 && err.status < 500
+      && err.status !== 401 && err.status !== 429;
     const errMessage    = err instanceof Error ? err.message : String(err);
     const attempts      = (row.attempts ?? 0) + 1;
-    const gaveUp        = !isConfigError && attempts >= MAX_ATTEMPTS;
+    const gaveUp        = !isConfigError && (isPermanent || attempts >= MAX_ATTEMPTS);
     const backoffMs     = BACKOFF_BASE_MS * Math.pow(2, attempts - 1);
     const nextRetry     = gaveUp || isConfigError ? null : new Date(Date.now() + backoffMs);
 

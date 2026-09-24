@@ -159,7 +159,7 @@ export async function submitCapture(
   form.append('app_version',      params.appVersion);
 
   if (params.posture)        form.append('posture',          params.posture);
-  if (params.durationMs)     form.append('duration_ms',      String(params.durationMs));
+  if (params.durationMs)     form.append('duration_ms',      String(Math.round(params.durationMs)));
   if (params.peakQuality)    form.append('peak_quality',     String(params.peakQuality));
   if (params.cardioSleeveId) form.append('cardiosleeve_id',  params.cardioSleeveId);
   if (params.s1RawLogits)    form.append('s1_raw_logits',    JSON.stringify(params.s1RawLogits));

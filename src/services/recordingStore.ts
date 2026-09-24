@@ -33,15 +33,17 @@ export function consumePendingCaptureId(): string {
 
 let _lastSavedPath = '';
 let _pathListeners: Array<(path: string) => void> = [];
+let _persistentListeners: Array<(path: string) => void> = [];
 
 /**
  * Called by App.tsx once the WAV file has been written to device storage.
- * Notifies any waiting ResultScreen instances immediately.
+ * Notifies one-shot listeners (consumed) and persistent subscribers (kept).
  */
 export function setLastSavedPath(path: string): void {
   _lastSavedPath = path;
   const cbs = _pathListeners.splice(0);
   cbs.forEach(cb => cb(path));
+  _persistentListeners.forEach(cb => cb(path));
 }
 
 /** Returns the path of the most recently saved WAV, or '' if none yet. */
@@ -50,9 +52,25 @@ export function getLastSavedPath(): string {
 }
 
 /**
- * Register a callback that fires once the next WAV path is available.
- * If a path is already stored the callback fires synchronously and no listener
- * is registered — no cleanup needed in that case.
+ * Subscribe to WAV path updates. Fires immediately if a path is already set,
+ * then fires again on every future setLastSavedPath call.
+ * Returns an unsubscribe function for use in useEffect cleanup.
+ *
+ * Use this (not onPathAvailable) wherever the component needs to react to a
+ * path that may arrive AFTER it mounts AND may already be set at mount time.
+ */
+export function subscribeToPath(cb: (path: string) => void): () => void {
+  if (_lastSavedPath) cb(_lastSavedPath);
+  _persistentListeners.push(cb);
+  return () => {
+    const idx = _persistentListeners.indexOf(cb);
+    if (idx !== -1) _persistentListeners.splice(idx, 1);
+  };
+}
+
+/**
+ * One-shot listener: fires once when a path becomes available, then removes
+ * itself. If a path is already stored the callback fires synchronously.
  * Returns an unsubscribe function for use in useEffect cleanup.
  */
 export function onPathAvailable(cb: (path: string) => void): () => void {

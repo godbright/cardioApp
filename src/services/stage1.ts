@@ -14,6 +14,7 @@
 import { NativeModules } from 'react-native';
 import { loadTensorflowModel } from 'react-native-fast-tflite';
 import type { TensorflowModel } from 'react-native-fast-tflite';
+import RNFS from 'react-native-fs';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,17 @@ let _modelPromise: Promise<TensorflowModel | null> | null = null;
 async function getModel(): Promise<TensorflowModel | null> {
   if (_model) return _model;
   if (_modelPromise) return _modelPromise;
+
+  // file:///android_asset/... is NOT a real filesystem path — Android assets are
+  // accessed via AssetManager, not as /android_asset/... files. RNFS.exists()
+  // returns false for this path, which safely short-circuits loadTensorflowModel
+  // before react-native-fast-tflite can crash trying to open a non-existent file.
+  const modelPath = MODEL_URI.replace(/^file:\/\//, '');
+  const accessible = await RNFS.exists(modelPath).catch(() => false);
+  if (!accessible) {
+    console.warn('[Stage1] Model file not accessible at:', modelPath, '— skipping native inference');
+    return null;
+  }
 
   _modelPromise = loadTensorflowModel({ url: MODEL_URI })
     .then(m => { _model = m; return m; })

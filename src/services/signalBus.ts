@@ -3,8 +3,8 @@
  *
  * Producers: BLE / Classic BT onData callbacks (called from BtAdapter in App.tsx)
  * Consumers: WaveformView — drains on an 80ms animation timer
- *            SDA engine — samples are also pushed to JSI pushSamples before
- *                         landing here, so this bus is waveform-display-only
+ *
+ * The SQI engine is fed in parallel via NativeSda.pushBatch() in App.tsx.
  *
  * The bus holds the last MAX_SAMPLES samples per channel. When the consumer
  * drains it, it receives all accumulated samples since the last drain.
