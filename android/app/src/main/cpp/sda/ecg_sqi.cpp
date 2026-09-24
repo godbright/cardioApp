@@ -5,7 +5,7 @@
 #include <algorithm>
 
 static constexpr float  NOMINAL_HR_BPM = 75.0f;
-static constexpr size_t MAX_WINDOW     = 8000;  // 2 s at up to 4 kHz
+static constexpr size_t MAX_WINDOW     = 4000;  // 2 s at 2 kHz
 
 // ── bSQI: simplified Pan-Tompkins beat detector ───────────────────────────────
 
@@ -40,15 +40,20 @@ float EcgSqi::bSQI(const float* ecg, size_t n, int fs) {
     if (peak_max < 1e-9f) return 0.0f;
 
     // 5. Count peaks (refractory period ~200 ms)
+    // first_peak skips the refractory guard for the very first detected beat;
+    // without this, beat 0 at sample 1 would be blocked by i - last_peak (1 - 0 = 1)
+    // never exceeding the refractory window, and the first R-peak would be dropped.
     const size_t refractory = static_cast<size_t>(0.2 * fs);
     int beats = 0;
     size_t last_peak = 0;
     bool above = false;
+    bool first_peak = true;
     for (size_t i = 1; i < n; ++i) {
         if (mwi[i] > thresh) {
-            if (!above && i - last_peak > refractory) {
+            if (!above && (first_peak || i - last_peak > refractory)) {
                 ++beats;
                 last_peak = i;
+                first_peak = false;
             }
             above = true;
         } else {
@@ -89,7 +94,6 @@ float EcgSqi::basSQI(const float* ecg, size_t n, int fs) {
     if (n < 2) return 0.f;
     // Estimate baseline as slow-moving average (500 ms window)
     const size_t half = static_cast<size_t>(0.25 * fs);
-    const size_t bwin = 2 * half + 1;
 
     double sig_power = 0, bas_power = 0;
     for (size_t i = 0; i < n; ++i) {

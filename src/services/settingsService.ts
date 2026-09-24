@@ -1,6 +1,18 @@
 import database from '../db';
 import AppSettingRecord from '../db/models/AppSettingRecord';
 
+// Build-time defaults from .env (via react-native-config).
+// Falls back gracefully if the native module isn't linked yet.
+let _envEndpoint = '';
+let _envToken    = '';
+try {
+  const Config = require('react-native-config').default;
+  _envEndpoint = Config.STAGE2_ENDPOINT ?? '';
+  _envToken    = Config.STAGE2_TOKEN    ?? '';
+} catch {
+  // native module not yet linked — safe to ignore, DB values will be used
+}
+
 // Well-known preference keys — add here as new settings are introduced.
 export type SettingKey =
   | 'language'           // e.g. 'en' | 'rw' | 'fr' | 'sw'
@@ -12,13 +24,15 @@ export type SettingKey =
   | 'deviceId'           // Physical tablet identifier, e.g. CHUK-T01 — from device provisioning QR
   | 'siteId'             // Site identifier (e.g. 'CHUK') — stored from QR provisioning, matches site JWT claim
 
-// Defaults applied when a key has never been written.
+// Defaults applied when a key has never been written to the DB.
+// .env values (compiled in at build time) are the fallback for endpoint/token;
+// QR provisioning overrides them at runtime by writing to the DB.
 const DEFAULTS: Record<SettingKey, string> = {
   language:           'en',
   videoGuidesEnabled: 'true',
   lastPairedDeviceId: '',
-  stage2Endpoint:     '',
-  stage2Token:        '',
+  stage2Endpoint:     _envEndpoint,
+  stage2Token:        _envToken,
   hwId:               '',
   deviceId:           '',
   siteId:             '',

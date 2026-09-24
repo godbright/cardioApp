@@ -14,6 +14,7 @@ add_library(CardioSda SHARED
     sda/pcg_sqi.cpp
     sda/sqa_engine.cpp
     sda/sqa_host_object.cpp
+    sda/mel_spec.cpp
     sda/sda_module.cpp
 )
 

@@ -58,27 +58,45 @@ void SqaEngine::push(const float* pcg, size_t pcg_n,
     if (!rate_set_.load(std::memory_order_relaxed) || prev != rate_hz) {
         sample_rate_.store(rate_hz, std::memory_order_relaxed);
         rate_set_.store(true, std::memory_order_relaxed);
-        // Filter reconfig happens safely in worker (it reads sample_rate_).
-        // Flush ring buffers so stale samples at the wrong rate don't pollute.
-        pcg_ring_.reset();
-        ecg_ring_.reset();
+        // Ring flush must run on the worker thread — calling reset() from the producer
+        // races with the consumer's concurrent pop(). Signal workerLoop() to drain.
+        reset_pending_.store(true, std::memory_order_release);
     }
     if (pcg && pcg_n > 0) pcg_ring_.push(pcg, pcg_n);
     if (ecg && ecg_n > 0) ecg_ring_.push(ecg, ecg_n);
+    // Record push time so the worker can distinguish genuine signal loss
+    // (no pushes for >500 ms) from normal ring-buffer drain between windows.
+    last_push_ms_.store(nowMs(), std::memory_order_relaxed);
 }
 
 void SqaEngine::reset() noexcept {
-    pcg_ring_.reset();
-    ecg_ring_.reset();
-    ecg_filter_.reset(); ecg_notch_.reset();
-    pcg_filter_.reset(); pcg_notch_.reset();
-    rate_set_.store(false, std::memory_order_relaxed);
-    slots_[0] = {}; slots_[1] = {};
+    // Defer the actual flush to workerLoop() — direct ring/filter manipulation
+    // from the JSI thread races with the worker's concurrent pop()/computeWindow().
+    reset_pending_.store(true, std::memory_order_release);
+}
+
+SqaPayload SqaEngine::read() noexcept {
+    // Seqlock: spin until publish_seq_ is even (no write in progress) and stable
+    // across the struct copy. Prevents a torn read if publish() runs concurrently.
+    while (true) {
+        const int slot = active_.load(std::memory_order_acquire);
+        const uint32_t seq1 = slot_seq_[slot].load(std::memory_order_acquire);
+        if (seq1 & 1u) continue;  // odd → publish in progress, retry
+        const SqaPayload p = slots_[slot];
+        std::atomic_thread_fence(std::memory_order_acquire);
+        const uint32_t seq2 = slot_seq_[slot].load(std::memory_order_relaxed);
+        if (seq1 == seq2) return p;
+        // seq changed during copy → retry
+    }
 }
 
 void SqaEngine::publish(const SqaPayload& p) noexcept {
     const int write_slot = 1 - active_.load(std::memory_order_relaxed);
+    // Seqlock: odd seq signals "write in progress" so read() retries rather than
+    // seeing a partially-written struct.
+    slot_seq_[write_slot].fetch_add(1, std::memory_order_release);  // → odd
     slots_[write_slot] = p;
+    slot_seq_[write_slot].fetch_add(1, std::memory_order_release);  // → even (stable)
     active_.store(write_slot, std::memory_order_release);
 }
 
@@ -125,11 +143,39 @@ SqaPayload SqaEngine::computeWindow(const float* pcg, const float* ecg,
 
 void SqaEngine::workerLoop() {
     int last_rate = -1;
+    // Publish a zeroed payload after NO_DATA_TIMEOUT_MS of no *pushes* so the UI
+    // does not display a stale green reading from a previous session.
+    //
+    // IMPORTANT: measure time-since-last-PUSH, not time-since-last-WINDOW.
+    // After computing a 2-second window the ring buffer is empty and takes another
+    // 2 seconds to refill at 8 kHz.  If we measured from last-window-compute the
+    // 500 ms timeout would fire in the middle of every normal refill cycle, zeroing
+    // the score on every computation — producing the yes/no oscillation the CHW sees.
+    // Pushes arrive every ~16 ms during streaming, so last_push_ms_ stays current
+    // during normal operation and only ages out when BLE actually disconnects.
+    static constexpr int64_t NO_DATA_TIMEOUT_MS = 500;
+    bool stale_zeroed = false; // avoid re-publishing zero on every idle tick
 
     while (!stop_.load(std::memory_order_acquire)) {
         const int rate = sample_rate_.load(std::memory_order_relaxed);
         if (!rate_set_.load(std::memory_order_relaxed)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+
+        // Consume a pending reset — drain rings and reset filter state here on the
+        // worker thread, where it is safe to do so without racing push() or pop().
+        if (reset_pending_.load(std::memory_order_acquire)) {
+            reset_pending_.store(false, std::memory_order_relaxed);
+            pcg_ring_.drain();
+            ecg_ring_.drain();
+            ecg_filter_.reset(); ecg_notch_.reset();
+            pcg_filter_.reset(); pcg_notch_.reset();
+            slots_[0] = {}; slots_[1] = {};
+            slot_seq_[0].store(0, std::memory_order_relaxed);
+            slot_seq_[1].store(0, std::memory_order_relaxed);
+            last_rate = -1;    // force filter reconfigure on next window
+            stale_zeroed = false;
             continue;
         }
 
@@ -147,6 +193,20 @@ void SqaEngine::workerLoop() {
             ecg_ring_.pop(ecg_win_, needed);
             const auto payload = computeWindow(pcg_win_, ecg_win_, needed, rate);
             publish(payload);
+            stale_zeroed = false;
+        } else {
+            // Not enough data yet — check whether pushes have actually stopped.
+            const int64_t last_push = last_push_ms_.load(std::memory_order_relaxed);
+            const bool no_signal = (last_push > 0) &&
+                                   ((nowMs() - last_push) > NO_DATA_TIMEOUT_MS);
+            if (no_signal && !stale_zeroed) {
+                SqaPayload zero{};
+                zero.timestamp_ms = nowMs();
+                publish(zero);
+                stale_zeroed = true;
+                LOGW("No pushes for >%lld ms — zeroing SQI payload",
+                     (long long)NO_DATA_TIMEOUT_MS);
+            }
         }
 
         // Poll at ~50 Hz — plenty for 25 Hz JSI read rate

@@ -104,7 +104,17 @@ async function _apiFetch<T>(
     let detail = `HTTP ${res.status}`;
     try {
       const body = await res.json();
-      detail = body?.detail ?? detail;
+      const d = body?.detail;
+      if (typeof d === 'string') {
+        detail = d;
+      } else if (Array.isArray(d) && d.length > 0) {
+        // FastAPI validation errors: detail is [{loc, msg, type}, ...]
+        detail = d.map((e: { loc?: string[]; msg?: string }) =>
+          `${e.loc?.slice(-1)[0] ?? '?'}: ${e.msg ?? JSON.stringify(e)}`
+        ).join('; ');
+      } else if (d != null) {
+        detail = JSON.stringify(d);
+      }
     } catch { /* ignore parse errors */ }
     throw new Stage2ApiError(res.status, detail);
   }
@@ -127,25 +137,41 @@ export async function submitCapture(
 ): Promise<SubmitCaptureResponse> {
   const { endpoint, token } = await _getConfig();
 
+  // Guard: confidence must be a finite number. A null/NaN here means Stage 1
+  // didn't complete — sending "null" or "NaN" causes Python float() to raise
+  // ValueError → 422. Fail fast with a clear message so the sync queue marks
+  // this row failed rather than retrying a permanently-broken payload.
+  const confidence = params.s1Confidence;
+  if (confidence == null || !isFinite(confidence)) {
+    throw new Error(
+      `Cannot submit capture ${params.captureId}: s1_confidence is ${confidence} — Stage 1 inference may not have completed`,
+    );
+  }
+
   const form = new FormData();
   form.append('capture_id',       params.captureId);
   form.append('patient_ref',      params.patientRef);
   form.append('valve_site',       params.valveSite);
   form.append('model_version',    params.modelVersion);
-  form.append('s1_confidence',    String(params.s1Confidence));
+  form.append('s1_confidence',    String(confidence));
   form.append('verdict',          params.s1Verdict);
   form.append('recording_sha256', params.recordingSha256);
   form.append('app_version',      params.appVersion);
 
   if (params.posture)        form.append('posture',          params.posture);
-  if (params.durationMs)     form.append('duration_ms',      String(params.durationMs));
+  if (params.durationMs)     form.append('duration_ms',      String(Math.round(params.durationMs)));
   if (params.peakQuality)    form.append('peak_quality',     String(params.peakQuality));
   if (params.cardioSleeveId) form.append('cardiosleeve_id',  params.cardioSleeveId);
   if (params.s1RawLogits)    form.append('s1_raw_logits',    JSON.stringify(params.s1RawLogits));
 
   if (params.recordingPath) {
-    form.append('audio_file', {
-      uri:  params.recordingPath,
+    // React Native FormData on Android requires a file:// URI; bare paths are
+    // rejected by the native networking layer. RNFS stores bare paths, so prefix.
+    const fileUri = params.recordingPath.startsWith('file://')
+      ? params.recordingPath
+      : `file://${params.recordingPath}`;
+    form.append('audio', {
+      uri:  fileUri,
       name: `${params.captureId}.wav`,
       type: 'audio/wav',
     } as unknown as Blob);

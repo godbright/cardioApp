@@ -8,7 +8,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, LayoutChangeEvent } from 'react-native';
-import Svg, { Polyline, Line, G } from 'react-native-svg';
+import Svg, { Polyline, Line, G, Path, Defs, LinearGradient, Stop } from 'react-native-svg';
 
 export interface WaveformStream {
   label: string;
@@ -82,20 +82,45 @@ interface StaticTraceProps {
 
 export function StaticTrace({ samples, color, height = 120 }: StaticTraceProps) {
   const n = samples.length;
-  const W = 1000;
+  if (n < 2) return null;
+  const W   = 1000;
   const mid = height / 2;
-  const amp = height * 0.38;
-  const points = samples
+  const amp = height * 0.42;
+
+  // Build SVG polyline points for the stroke.
+  const pts = samples
     .map((v, i) => `${((i / (n - 1)) * W).toFixed(1)},${(mid - v * amp).toFixed(1)}`)
     .join(' ');
 
+  // Build a closed filled area path: trace the waveform then return along the
+  // centre line so the fill shows the displacement from zero on both sides.
+  const firstX = '0';
+  const lastX  = W.toFixed(1);
+  const fillD  = `M ${firstX},${mid} ` +
+    samples.map((v, i) =>
+      `L ${((i / (n - 1)) * W).toFixed(1)},${(mid - v * amp).toFixed(1)}`
+    ).join(' ') +
+    ` L ${lastX},${mid} Z`;
+
+  const gradId = 'wfGrad';
+
   return (
     <Svg width="100%" height={height} viewBox={`0 0 ${W} ${height}`} preserveAspectRatio="none">
+      <Defs>
+        <LinearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0"   stopColor={color} stopOpacity={0.28} />
+          <Stop offset="0.5" stopColor={color} stopOpacity={0.10} />
+          <Stop offset="1"   stopColor={color} stopOpacity={0.28} />
+        </LinearGradient>
+      </Defs>
+      {/* Filled area */}
+      <Path d={fillD} fill={`url(#${gradId})`} />
+      {/* Stroke on top */}
       <Polyline
-        points={points}
+        points={pts}
         fill="none"
         stroke={color}
-        strokeWidth={1.6}
+        strokeWidth={1.8}
         strokeLinejoin="round"
         strokeLinecap="round"
         vectorEffect="non-scaling-stroke"
@@ -110,12 +135,12 @@ export function StaticTrace({ samples, color, height = 120 }: StaticTraceProps) 
 // in a continuous loop instead of the synthetic generator.
 
 import { DEMO_MODE, PCG_DEMO_SAMPLES, ECG_DEMO_SAMPLES, PCG_DEMO_RATE, ECG_DEMO_RATE } from '../demo';
+import { drain as signalBusDrain, hasData as signalBusHasData } from '../services/signalBus';
 
 export function useWaveformBuffers(active: boolean, modality: 'pcg' | 'ecg' | null) {
   const BUF = 620;
   const pcgRef = useRef<number[]>(new Array(BUF).fill(0));
   const ecgRef = useRef<number[]>(new Array(BUF).fill(0));
-  const cardiacRef   = useRef(0);
   const pcgCursorRef = useRef(0);
   const ecgCursorRef = useRef(0);
   const [tick, setTick] = useState(0);
@@ -159,31 +184,47 @@ export function useWaveformBuffers(active: boolean, modality: 'pcg' | 'ecg' | nu
       return () => clearInterval(interval);
     }
 
-    // Synthetic generator (non-demo mode).
-    const CYCLE = 60 / 74;
-    const RATE  = 220;
+    // Drain SignalBus every 50ms (~100 samples at 2 kHz). If no real signal has arrived, the buffers
+    // stay at zero — showing a flat line until hardware data flows.
+    //
+    // IMPORTANT: use peak-hold (max absolute value) across each stride window,
+    // NOT point sampling. PCG S1/S2 events are brief transients (~80–120 ms)
+    // where most samples are near-zero and only a few hit the peak amplitude.
+    // Point sampling with a stride of 30–70 hops over those peaks entirely,
+    // making a real heart sound look like a flat noise floor. Peak-hold
+    // preserves the highest-magnitude sample in each stride window so the
+    // pulsating S1/S2 pattern is always visible regardless of stride.
+    const DISPLAY_STEPS = 30;
     const interval = setInterval(() => {
-      const steps = Math.max(1, Math.round(RATE * 0.08));
-      for (let k = 0; k < steps; k++) {
-        cardiacRef.current += 1 / (CYCLE * RATE);
-        if (cardiacRef.current >= 1) cardiacRef.current -= 1;
-        const p = cardiacRef.current;
-        if (modality === 'pcg' || modality === null) {
-          pcgRef.current.push(pcgSample(p, 1, true));
-          pcgRef.current.shift();
+      if (signalBusHasData()) {
+        const { pcm, ecg, count } = signalBusDrain();
+        const stride = Math.max(1, Math.floor(count / DISPLAY_STEPS));
+        for (let i = 0; i < count; i += stride) {
+          const end = Math.min(i + stride, count);
+          if (modality === 'pcg' || modality === null) {
+            let peak = pcm[i];
+            for (let j = i + 1; j < end; j++) {
+              if (Math.abs(pcm[j]) > Math.abs(peak)) peak = pcm[j];
+            }
+            pcgRef.current.push(peak);
+            pcgRef.current.shift();
+          }
+          let peakEcg = ecg[i];
+          for (let j = i + 1; j < end; j++) {
+            if (Math.abs(ecg[j]) > Math.abs(peakEcg)) peakEcg = ecg[j];
+          }
+          ecgRef.current.push(peakEcg);
+          ecgRef.current.shift();
         }
-        ecgRef.current.push(ecgSample(p, 1));
-        ecgRef.current.shift();
+        setTick(t => t + 1);
       }
-      setTick(t => t + 1);
-    }, 80);
+    }, 50);
     return () => clearInterval(interval);
   }, [active, modality]);
 
   function reset() {
     pcgRef.current = new Array(BUF).fill(0);
     ecgRef.current = new Array(BUF).fill(0);
-    cardiacRef.current = 0;
     pcgCursorRef.current = 0;
     ecgCursorRef.current = 0;
   }
@@ -191,24 +232,6 @@ export function useWaveformBuffers(active: boolean, modality: 'pcg' | 'ecg' | nu
   return { pcgBuf: pcgRef.current, ecgBuf: ecgRef.current, reset };
 }
 
-function gauss(x: number, mu: number, s: number) {
-  return Math.exp(-((x - mu) ** 2) / (2 * s * s));
-}
-function pcgSample(p: number, q: number, abn: boolean) {
-  let s = 0.95 * gauss(p, 0.12, 0.028) + 0.72 * gauss(p, 0.42, 0.024);
-  if (abn && p > 0.15 && p < 0.40) s += 0.42 * (Math.random() * 2 - 1) * gauss(p, 0.27, 0.14);
-  s *= 0.25 + 0.75 * q;
-  s += (1 - q) * 0.28 * (Math.random() * 2 - 1);
-  return s;
-}
-function ecgSample(p: number, q: number) {
-  let s = 0.13 * gauss(p, 0.02, 0.02) - 0.09 * gauss(p, 0.10, 0.009)
-    + 1.0 * gauss(p, 0.125, 0.006) - 0.20 * gauss(p, 0.15, 0.009)
-    + 0.24 * gauss(p, 0.33, 0.032);
-  s *= 0.55 + 0.45 * q;
-  s += (1 - q) * 0.16 * (Math.random() * 2 - 1);
-  return s;
-}
 
 const styles = StyleSheet.create({
   container: { position: 'relative', width: '100%' },

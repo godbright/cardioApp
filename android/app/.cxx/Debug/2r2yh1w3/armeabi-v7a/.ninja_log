@@ -1,8 +1,11 @@
 # ninja log v5
-0	304	1787764112879844088	CMakeFiles/CardioSda.dir/sda/filter.cpp.o	5ab46d91619b4ef0
-1	313	1787764112890762982	CMakeFiles/CardioSda.dir/sda/ecg_sqi.cpp.o	daed5d966677594a
+519	569	1788954979657367714	/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/build/intermediates/cxx/Debug/2r2yh1w3/obj/armeabi-v7a/libCardioSda.so	89789a9fc22f9067
+3	427	1788954979503340548	CMakeFiles/CardioSda.dir/sda/sda_module.cpp.o	4d2b81e56018d22a
 1	422	1787764112999543294	CMakeFiles/CardioSda.dir/sda/pcg_sqi.cpp.o	321780606c0e06b2
-1	492	1787764113069171022	CMakeFiles/CardioSda.dir/sda/sda_module.cpp.o	4d2b81e56018d22a
-1	494	1787764113071070971	CMakeFiles/CardioSda.dir/sda/sqa_engine.cpp.o	d2e995f73900a7a
-1	626	1787764113202835132	CMakeFiles/CardioSda.dir/sda/sqa_host_object.cpp.o	2ec648ae55d21365
-626	665	1787764113243507491	/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/build/intermediates/cxx/Debug/2r2yh1w3/obj/armeabi-v7a/libCardioSda.so	89789a9fc22f9067
+3	519	1788954979598132137	CMakeFiles/CardioSda.dir/sda/sqa_host_object.cpp.o	2ec648ae55d21365
+3	221	1788954979306920608	CMakeFiles/CardioSda.dir/sda/ecg_sqi.cpp.o	daed5d966677594a
+3	438	1788954979518994814	CMakeFiles/CardioSda.dir/sda/sqa_engine.cpp.o	d2e995f73900a7a
+0	304	1787764112879844088	CMakeFiles/CardioSda.dir/sda/filter.cpp.o	5ab46d91619b4ef0
+2	234	1788959193327137040	CMakeFiles/CardioSda.dir/sda/mel_spec.cpp.o	2716d030c28dffa7
+2	372	1788959193463393972	CMakeFiles/CardioSda.dir/sda/sda_module.cpp.o	4d2b81e56018d22a
+372	426	1788959193520184868	/Users/brightsmac/Desktop/papers_review/data collection/DiagnosticApp/android/app/build/intermediates/cxx/Debug/2r2yh1w3/obj/armeabi-v7a/libCardioSda.so	8bceb7217f966eef

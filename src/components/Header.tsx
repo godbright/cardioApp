@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import { Colors } from '../theme/colors';
-import { WaveformIcon, ChevronLeft, SettingsIcon, MenuIcon } from './Icons';
+import { WaveformIcon, ChevronLeft, SettingsIcon, MenuIcon, BluetoothIcon } from './Icons';
+import BluetoothPickerModal from './BluetoothPickerModal';
 
 interface HeaderProps {
   title: string;
@@ -14,6 +15,7 @@ interface HeaderProps {
 export default function Header({ title, canBack = false, onBack }: HeaderProps) {
   const { state, goBack, navigate, openSideNav } = useApp();
   const insets = useSafeAreaInsets();
+  const [pickerVisible, setPickerVisible] = useState(false);
 
   const connDot =
     state.conn === 'connected'    ? Colors.green :
@@ -26,41 +28,49 @@ export default function Header({ title, canBack = false, onBack }: HeaderProps) 
     'Not found';
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
-      <View style={styles.inner}>
-        {canBack ? (
-          <TouchableOpacity style={styles.iconBtn} onPress={onBack ?? goBack}>
-            <ChevronLeft size={20} color={Colors.white} />
-          </TouchableOpacity>
-        ) : (
-          <>
-            <TouchableOpacity style={styles.iconBtn} onPress={openSideNav} accessibilityLabel="Open navigation menu">
-              <MenuIcon size={18} color="#DCE3EC" strokeWidth={2} />
+    <>
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <View style={styles.inner}>
+          {canBack ? (
+            <TouchableOpacity style={styles.iconBtn} onPress={onBack ?? goBack}>
+              <ChevronLeft size={20} color={Colors.white} />
             </TouchableOpacity>
-            <View style={styles.logoBox}>
-              <WaveformIcon size={22} color={Colors.white} />
-            </View>
-          </>
-        )}
+          ) : (
+            <>
+              <TouchableOpacity style={styles.iconBtn} onPress={openSideNav} accessibilityLabel="Open navigation menu">
+                <MenuIcon size={18} color="#DCE3EC" strokeWidth={2} />
+              </TouchableOpacity>
+              <View style={styles.logoBox}>
+                <WaveformIcon size={22} color={Colors.white} />
+              </View>
+            </>
+          )}
 
-        <Text style={styles.title} numberOfLines={1}>{title}</Text>
+          <Text style={styles.title} numberOfLines={1}>{title}</Text>
 
-        <View style={styles.right}>
-          <TouchableOpacity
-            style={styles.connPill}
-            onPress={() => navigate('settings')}
-            accessibilityLabel={`Bluetooth: ${connLabel}`}
-          >
-            <View style={[styles.dot, { backgroundColor: connDot }]} />
-            <Text style={styles.connLabel} numberOfLines={1}>{connLabel}</Text>
-          </TouchableOpacity>
+          <View style={styles.right}>
+            <TouchableOpacity
+              style={styles.connPill}
+              onPress={() => setPickerVisible(true)}
+              accessibilityLabel={`Bluetooth: ${connLabel}. Tap to connect a device.`}
+            >
+              <BluetoothIcon size={14} color="#DCE3EC" />
+              <View style={[styles.dot, { backgroundColor: connDot }]} />
+              <Text style={styles.connLabel} numberOfLines={1}>{connLabel}</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity style={styles.iconBtn} onPress={() => navigate('settings')}>
-            <SettingsIcon size={19} color="#DCE3EC" strokeWidth={2} />
-          </TouchableOpacity>
+            <TouchableOpacity style={styles.iconBtn} onPress={() => navigate('settings')}>
+              <SettingsIcon size={19} color="#DCE3EC" strokeWidth={2} />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
-    </View>
+
+      <BluetoothPickerModal
+        visible={pickerVisible}
+        onClose={() => setPickerVisible(false)}
+      />
+    </>
   );
 }
 
@@ -109,7 +119,7 @@ const styles = StyleSheet.create({
   connPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 9,
+    gap: 7,
     height: 36,
     paddingHorizontal: 13,
     borderRadius: 8,

@@ -10,13 +10,15 @@ import Header from '../components/Header';
 import { BluetoothIcon, LogoutIcon, ChevronDown, CameraIcon } from '../components/Icons';
 import { Colors } from '../theme/colors';
 import { setTtsLanguage } from '../services/tts';
-import { BluetoothService } from '../services/bluetooth';
-import type { BluetoothDevice } from '../services/bluetooth';
+import { BluetoothService, BT_STACK } from '../services/btAdapter';
+import { BleService } from '../services/bleService';
+import type { BtDevice } from '../services/btAdapter';
 import { useOrientation } from '../hooks/useOrientation';
 import { useStrings } from '../i18n/useStrings';
 import type { SupportedLang } from '../services/tts';
 import { SettingsService } from '../services/settingsService';
 import { syncRosterNow } from '../services/rosterService';
+import { forceFlush, getPendingCount, getFailedCount } from '../services/syncQueue';
 
 // ── Device list with custom persistent scrollbar ──────────────────────────────
 // Uses Animated.event so scroll position drives the thumb directly on the JS
@@ -148,8 +150,8 @@ export default function SettingsScreen() {
   const { isPortrait } = useOrientation();
   const S = useStrings();
 
-  const [pairedDevices,  setPairedDevices]  = useState<BluetoothDevice[]>([]);
-  const [discovered,     setDiscovered]     = useState<BluetoothDevice[]>([]);
+  const [pairedDevices,  setPairedDevices]  = useState<BtDevice[]>([]);
+  const [discovered,     setDiscovered]     = useState<BtDevice[]>([]);
   const [scanning,       setScanning]       = useState(false);
   const [connecting,     setConnecting]     = useState<string | null>(null);
   const [forgetting,     setForgetting]     = useState<string | null>(null);
@@ -164,12 +166,23 @@ export default function SettingsScreen() {
   const [rosterSyncing, setRosterSyncing] = useState(false);
   const [scannerOpen,  setScannerOpen]  = useState(false);
 
+  const [syncPending, setSyncPending] = useState(0);
+  const [syncFailed,  setSyncFailed]  = useState(0);
+  const [syncing,     setSyncing]     = useState(false);
+
   const loadPaired = useCallback(async () => {
     const devices = await BluetoothService.getPairedDevices();
     setPairedDevices(devices);
   }, []);
 
+  const loadSyncCounts = useCallback(async () => {
+    const [p, f] = await Promise.all([getPendingCount(), getFailedCount()]);
+    setSyncPending(p);
+    setSyncFailed(f);
+  }, []);
+
   useEffect(() => { loadPaired(); }, [loadPaired]);
+  useEffect(() => { loadSyncCounts(); }, [loadSyncCounts]);
 
   useEffect(() => {
     SettingsService.getAll().then(s => {
@@ -193,12 +206,19 @@ export default function SettingsScreen() {
   async function handleScan() {
     setScanning(true);
     setDiscovered([]);
+    // In BLE mode register a progressive callback so devices appear as discovered.
+    if (BT_STACK === 'ble') {
+      BleService.onDiscoveredDevice(d =>
+        setDiscovered(prev => prev.some(x => x.address === d.address) ? prev : [...prev, d]),
+      );
+    }
     const found = await BluetoothService.startDiscovery();
+    if (BT_STACK === 'ble') BleService.onDiscoveredDevice(null);
     setDiscovered(found);
     setScanning(false);
   }
 
-  function handleForget(device: BluetoothDevice) {
+  function handleForget(device: BtDevice) {
     Alert.alert(
       'Forget device?',
       `Remove "${device.name ?? device.address}" from paired devices? You will need to pair it again to use it.`,
@@ -208,10 +228,13 @@ export default function SettingsScreen() {
           text: 'Forget',
           style: 'destructive',
           onPress: async () => {
-            setForgetting(device.address);
-            await BluetoothService.forgetDevice(device.address);
-            await loadPaired();
-            setForgetting(null);
+            try {
+              setForgetting(device.address);
+              await BluetoothService.forgetDevice(device.address);
+              await loadPaired();
+            } finally {
+              setForgetting(null);
+            }
           },
         },
       ],
@@ -316,6 +339,15 @@ export default function SettingsScreen() {
     } finally {
       setRosterSyncing(false);
     }
+  }
+
+  async function handleSyncNow() {
+    setSyncing(true);
+    await forceFlush();
+    // Give the flush a moment to process, then refresh counts.
+    await new Promise(r => setTimeout(r, 3000));
+    await loadSyncCounts();
+    setSyncing(false);
   }
 
   // ── Reusable card sections ────────────────────────────────────────────────
@@ -503,7 +535,9 @@ export default function SettingsScreen() {
       {availablePaired.length > 0 && (
         <View style={styles.deviceSection}>
           <View style={styles.deviceSectionHeader}>
-            <Text style={styles.deviceSectionTitle}>{S.settings.pairedDevices}</Text>
+            <Text style={styles.deviceSectionTitle}>
+              {BT_STACK === 'ble' ? 'Known BLE Devices' : S.settings.pairedDevices}
+            </Text>
             <TouchableOpacity onPress={loadPaired}>
               <Text style={styles.refreshLink}>{S.settings.refresh}</Text>
             </TouchableOpacity>
@@ -627,6 +661,47 @@ export default function SettingsScreen() {
     </View>
   );
 
+  const syncCard = (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Data Sync</Text>
+
+      {/* Status row */}
+      <View style={styles.syncStatusRow}>
+        <View style={styles.syncStat}>
+          <Text style={styles.syncStatNum}>{syncPending}</Text>
+          <Text style={styles.syncStatLabel}>Pending</Text>
+        </View>
+        <View style={styles.syncStatDivider} />
+        <View style={styles.syncStat}>
+          <Text style={[styles.syncStatNum, syncFailed > 0 && { color: Colors.red }]}>
+            {syncFailed}
+          </Text>
+          <Text style={styles.syncStatLabel}>Failed</Text>
+        </View>
+        <View style={{ flex: 1 }} />
+        <TouchableOpacity
+          style={[styles.syncNowBtn, syncing && { opacity: 0.55 }]}
+          onPress={handleSyncNow}
+          disabled={syncing}
+        >
+          {syncing
+            ? <ActivityIndicator size="small" color={Colors.white} />
+            : <Text style={styles.syncNowBtnText}>Sync Now</Text>
+          }
+        </TouchableOpacity>
+      </View>
+
+      {syncFailed > 0 && (
+        <Text style={styles.syncFailNote}>
+          {syncFailed} capture{syncFailed !== 1 ? 's' : ''} failed after max retries. Check connectivity and re-open the app to reset.
+        </Text>
+      )}
+      {syncPending === 0 && syncFailed === 0 && (
+        <Text style={styles.syncOkNote}>All captures synced.</Text>
+      )}
+    </View>
+  );
+
   // ── Portrait layout ────────────────────────────────────────────────────────
 
   if (isPortrait) {
@@ -640,6 +715,9 @@ export default function SettingsScreen() {
 
           {/* Device provisioning — full width */}
           {provisioningCard}
+
+          {/* Data sync — full width */}
+          {syncCard}
 
           {/* Video Guides — full width */}
           <View style={styles.card}>
@@ -688,7 +766,8 @@ export default function SettingsScreen() {
 
           {/* Left column */}
           <View style={styles.col}>
-                {accountCard}
+            {accountCard}
+            {syncCard}
             {bluetoothCard}
           </View>
 
@@ -723,7 +802,6 @@ export default function SettingsScreen() {
             </View>
         
      {provisioningCard}
-        
 
           </View>
         </View>
@@ -938,6 +1016,24 @@ const styles = StyleSheet.create({
     color: Colors.textLight,
     textAlign: 'center',
   },
+
+  // Data sync card
+  syncStatusRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 16,
+    backgroundColor: Colors.bgWarm, borderRadius: 10,
+    borderWidth: 1, borderColor: Colors.border, padding: 14,
+  },
+  syncStat:        { alignItems: 'center', gap: 2 },
+  syncStatNum:     { fontSize: 22, fontFamily: 'IBMPlexSans-SemiBold', fontWeight: '600', color: Colors.textDark },
+  syncStatLabel:   { fontSize: 11, fontFamily: 'IBMPlexMono-Regular', fontWeight: '400', color: Colors.textLight, textTransform: 'uppercase', letterSpacing: 1 },
+  syncStatDivider: { width: 1, height: 32, backgroundColor: Colors.border },
+  syncNowBtn: {
+    paddingHorizontal: 18, paddingVertical: 9, borderRadius: 8,
+    backgroundColor: Colors.navy, alignItems: 'center', justifyContent: 'center', minWidth: 96,
+  },
+  syncNowBtnText:  { fontSize: 13, fontFamily: 'IBMPlexSans-Medium', fontWeight: '500', color: Colors.white },
+  syncFailNote:    { fontSize: 12, color: Colors.red, lineHeight: 18 },
+  syncOkNote:      { fontSize: 12, color: Colors.green, lineHeight: 18 },
   provFieldRow: { flexDirection: 'row', gap: 12 },
   provField: { gap: 6 },
   provLabel: {

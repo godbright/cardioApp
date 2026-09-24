@@ -12,6 +12,7 @@
  * Then rebuild the Android app: npx react-native run-android
  */
 
+import { Buffer } from 'buffer';
 import { PermissionsAndroid, Platform } from 'react-native';
 import RNBluetoothClassic, {
   BluetoothDevice,
@@ -23,9 +24,10 @@ import { SettingsService } from './settingsService';
 export type BtStatus = 'connected' | 'reconnecting' | 'notfound';
 
 export interface RawSample {
-  pcg: number;   // normalized [-1, 1]
-  ecg: number;   // normalized [-1, 1]
-  ts:  number;   // monotonic ms
+  pcg:     number;  // normalized [-1, 1]
+  ecg:     number;  // normalized [-1, 1]
+  ts:      number;  // monotonic ms
+  rateHz?: number;  // sample rate — defaults to 2000 Hz when not provided by the source
 }
 
 // Re-export so Settings screen can type device lists without importing the lib.
@@ -33,11 +35,11 @@ export type { BluetoothDevice };
 
 // ─── Module-level state ───────────────────────────────────────────────────────
 
-type StatusCallback = (status: BtStatus, deviceName?: string) => void;
-type DataCallback   = (sample: RawSample) => void;
+type StatusCallback    = (status: BtStatus, deviceName?: string) => void;
+type BatchDataCallback = (pcm: Float32Array, ecg: Float32Array, count: number, rateHz: number) => void;
 
-let _statusCb:         StatusCallback | null = null;
-let _dataCb:           DataCallback   | null = null;
+let _statusCb:         StatusCallback    | null = null;
+let _dataCb:           BatchDataCallback | null = null;
 let _connectedDevice:  BluetoothDevice | null = null;
 let _dataSubscription: { remove(): void } | null = null;
 let _disconnectSub:    { remove(): void } | null = null;
@@ -116,7 +118,13 @@ async function _attachToDevice(device: BluetoothDevice): Promise<boolean> {
     // is documented — at that point only the parser body changes.
     _dataSubscription = connectedDevice.onDataReceived((event: any) => {
       const sample = CardioSleeveDataParser.parse(event.data);
-      if (sample) _dataCb?.(sample);
+      if (sample && _dataCb) {
+        // Classic BT delivers one sample at a time — wrap in 1-element typed arrays
+        // to satisfy the shared batch callback interface.
+        const pcm = new Float32Array([sample.pcm]);
+        const ecg = new Float32Array([sample.ecg]);
+        _dataCb(pcm, ecg, 1, sample.rateHz ?? 2000);
+      }
     });
 
     // Handle unexpected disconnects — attempt silent reconnect.
@@ -142,7 +150,8 @@ export const BluetoothService = {
 
   /** Register status + data callbacks before calling autoConnect(). */
   onStatus(cb: StatusCallback) { _statusCb = cb; },
-  onData(cb: DataCallback)     { _dataCb   = cb; },
+  onData(cb: BatchDataCallback) { _dataCb   = cb; },
+  onRecordingComplete(_cb: (wav: Buffer, recordingId: number) => void) { /* CardioSleeve streams live; no file reassembly */ },
 
   /**
    * Called once at app launch (from App.tsx).

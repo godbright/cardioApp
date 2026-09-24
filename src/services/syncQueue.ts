@@ -19,11 +19,13 @@ import { Q } from '@nozbe/watermelondb';
 import database from '../db';
 import SyncQueueRecord    from '../db/models/SyncQueueRecord';
 import CaptureRecord      from '../db/models/CaptureRecord';
+import PatientRecord      from '../db/models/PatientRecord';
 import Stage1ResultRecord from '../db/models/Stage1ResultRecord';
 import Stage2ResultRecord from '../db/models/Stage2ResultRecord';
 import {
   submitCapture,
   getJobResult,
+  Stage2ApiError,
   Stage2NotConfiguredError,
   type S2Verdict,
   type SubmitCaptureResponse,
@@ -37,10 +39,6 @@ const BACKOFF_BASE_MS    = 15_000;  // 15 s — doubles each attempt, cap ~32 mi
 const POLL_INTERVAL_MS   = 30_000;  // 30 s background flush cycle
 const JOB_POLL_MAX_MS    = 120_000; // 2 min max wait for async Stage 2 job
 const JOB_POLL_STEP_MS   = 5_000;  // 5 s between job-result polls
-
-// Simulate Stage 2 in dev so the full pipeline runs without a live backend.
-// Set to false manually if you want to test against the real API in dev.
-const STAGE2_SIMULATE = __DEV__;
 
 // ─── Module state ─────────────────────────────────────────────────────────────
 
@@ -67,6 +65,34 @@ export function startSyncWorker(): void {
 /** Trigger an immediate flush without waiting for the next poll cycle. */
 export function triggerFlush(): void {
   if (!_flushing) _flush();
+}
+
+/**
+ * Manual sync — resets backoff timers on pending rows and revives failed rows
+ * so they are eligible for the next flush regardless of retry schedule.
+ * Use this for explicit user-initiated sync (e.g. "Sync Now" button).
+ */
+export async function forceFlush(): Promise<void> {
+  const collection = database.get<SyncQueueRecord>('sync_queue');
+
+  const [pending, failed] = await Promise.all([
+    collection.query(Q.where('status', 'pending')).fetch(),
+    collection.query(Q.where('status', 'failed')).fetch(),
+  ]);
+
+  const toReset = [...pending, ...failed];
+  if (toReset.length > 0) {
+    await database.write(async () => {
+      for (const row of toReset) {
+        await row.update(r => {
+          r.status      = 'pending';
+          r.nextRetryAt = null;   // clear backoff — eligible immediately
+        });
+      }
+    });
+  }
+
+  _flush();
 }
 
 /** Count of recordings waiting for Stage 2 confirmation. */
@@ -122,8 +148,8 @@ async function _processRow(row: SyncQueueRecord): Promise<void> {
   });
 
   try {
-    const [capture, stage1] = await _loadCaptureMeta(row.captureId);
-    const s2Result = await _upload(capture, stage1);
+    const [capture, stage1, patient] = await _loadCaptureMeta(row.captureId);
+    const s2Result = await _upload(capture, stage1, patient);
 
     await database.write(async () => {
       await database.get<Stage2ResultRecord>('stage2_results').create(r => {
@@ -147,12 +173,19 @@ async function _processRow(row: SyncQueueRecord): Promise<void> {
     _resultCb?.(row.captureId);
 
   } catch (err) {
-    // Don't retry if the device isn't configured — no point in burning attempts.
+    // Hermes bug: catch-clause variables can't be referenced inside a nested
+    // async arrow function (database.write callback). Extract everything needed
+    // from err before any closure boundary.
     const isConfigError = err instanceof Stage2NotConfiguredError;
-    const attempts  = (row.attempts ?? 0) + 1;
-    const gaveUp    = !isConfigError && attempts >= MAX_ATTEMPTS;
-    const backoffMs = BACKOFF_BASE_MS * Math.pow(2, attempts - 1);
-    const nextRetry = gaveUp || isConfigError ? null : new Date(Date.now() + backoffMs);
+    // 4xx errors (except 401/429) indicate a permanently bad payload — no point retrying.
+    const isPermanent   = err instanceof Stage2ApiError
+      && err.status >= 400 && err.status < 500
+      && err.status !== 401 && err.status !== 429;
+    const errMessage    = err instanceof Error ? err.message : String(err);
+    const attempts      = (row.attempts ?? 0) + 1;
+    const gaveUp        = !isConfigError && (isPermanent || attempts >= MAX_ATTEMPTS);
+    const backoffMs     = BACKOFF_BASE_MS * Math.pow(2, attempts - 1);
+    const nextRetry     = gaveUp || isConfigError ? null : new Date(Date.now() + backoffMs);
 
     await database.write(async () => {
       await row.update(r => {
@@ -160,7 +193,7 @@ async function _processRow(row: SyncQueueRecord): Promise<void> {
         r.attempts      = attempts;
         r.lastAttemptAt = new Date();
         r.nextRetryAt   = nextRetry;
-        r.lastError     = err instanceof Error ? err.message : String(err);
+        r.lastError     = errMessage;
       });
     });
 
@@ -168,20 +201,23 @@ async function _processRow(row: SyncQueueRecord): Promise<void> {
       console.warn('[SyncWorker] Stage 2 not configured — sync paused until endpoint/token are set in Settings.');
     } else if (gaveUp) {
       console.warn(`[SyncWorker] Capture ${row.captureId} permanently failed after ${MAX_ATTEMPTS} attempts.`);
+    } else {
+      console.warn(`[SyncWorker] Capture ${row.captureId} attempt ${attempts} failed: ${errMessage}`);
     }
   }
 }
 
 async function _loadCaptureMeta(
   captureId: string,
-): Promise<[CaptureRecord, Stage1ResultRecord]> {
+): Promise<[CaptureRecord, Stage1ResultRecord, PatientRecord]> {
   const capture = await database.get<CaptureRecord>('captures').find(captureId);
+  const patient = await database.get<PatientRecord>('patients').find(capture.patientId);
   const stage1s = await database
     .get<Stage1ResultRecord>('stage1_results')
     .query(Q.where('capture_id', captureId))
     .fetch();
   if (!stage1s[0]) throw new Error(`No Stage 1 result found for capture ${captureId}`);
-  return [capture, stage1s[0]];
+  return [capture, stage1s[0], patient];
 }
 
 // ─── Upload ───────────────────────────────────────────────────────────────────
@@ -195,21 +231,13 @@ interface S2Result {
 async function _upload(
   capture: CaptureRecord,
   stage1:  Stage1ResultRecord,
+  patient: PatientRecord,
 ): Promise<S2Result> {
-  if (STAGE2_SIMULATE) {
-    await new Promise<void>(res => setTimeout(res, 1_200));
-    return {
-      job_id:        `sim-${capture.id.slice(0, 8)}`,
-      s2_verdict:    'abnormal-as-confirmed',
-      s2_confidence: 0.91,
-    };
-  }
-
   const hwId = await SettingsService.getHwId();
 
   const response: SubmitCaptureResponse = await submitCapture({
     captureId:       capture.id,
-    patientRef:      capture.patientId,  // WatermelonDB patient UUID used as ref
+    patientRef:      patient.studyCode,
     valveSite:       capture.site,
     posture:         capture.posture ?? null,
     modelVersion:    stage1.modelVersion,
